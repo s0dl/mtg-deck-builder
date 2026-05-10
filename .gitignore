@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+venv/
+.venv/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Environment
+.env
+
+# Docker and OS noise
+.DS_Store
+
+mtg_deck_builder_backend.egg-info
+build
