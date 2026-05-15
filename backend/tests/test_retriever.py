@@ -42,3 +42,20 @@ def test_score_text_match_prioritizes_title_and_metadata() -> None:
     )
 
     assert izzet_score > boros_score
+
+
+def test_score_text_match_prioritizes_exact_archetype_phrase() -> None:
+    ruby_storm_score = _score_text_match(
+        title="Ruby Storm (Modern)",
+        content="Top deck cards: Ruby Medallion, Manamorphose, Pyretic Ritual, Grapeshot",
+        terms=["ruby", "storm"],
+        metadata={"format": "modern", "archetype": "Ruby Storm"},
+    )
+    incidental_storm_score = _score_text_match(
+        title="Eldrazi Tron (Modern)",
+        content="Top deck cards: Ugin, Eye of the Storms, Eldrazi Temple, Urza's Tower",
+        terms=["ruby", "storm"],
+        metadata={"format": "modern", "archetype": "Eldrazi Tron"},
+    )
+
+    assert ruby_storm_score > incidental_storm_score

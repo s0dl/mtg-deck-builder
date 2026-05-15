@@ -244,6 +244,16 @@ def _budget_score(card: dict[str, Any], request: DeckRequest) -> float:
     price = _price(card)
     if price is None:
         return -0.5
+    if request.budget_usd >= 300:
+        preferred_minimum = max(request.budget_usd / 60.0, 2.0)
+        preferred_maximum = max(request.budget_usd / 10.0, preferred_minimum)
+        if preferred_minimum <= price <= preferred_maximum:
+            return 3.0
+        if price < preferred_minimum:
+            return 0.5
+        if price <= request.budget_usd / 4.0:
+            return 1.0
+        return -min(6.0, price / max(preferred_maximum, 1.0))
     per_card_soft_cap = max(request.budget_usd / 20.0, 0.25)
     if price <= per_card_soft_cap:
         return 3.0

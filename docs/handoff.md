@@ -12,6 +12,8 @@ The app now has a working agent-oriented deck generation path:
 - Ollama remains available for local experimentation, but may be too weak for reliable structured deck construction.
 - The frontend shows agent activity, context, validation, pricing, and selectable themes.
 - Candidate pools now pass through a deterministic deck evaluation skill that scores legality, color identity, curve fit, role fit, budget, and request-term synergy before model/fallback construction.
+- Agent strategy retrieval now includes MTGDecks meta deck snapshots, and card corpus retrieval combines vector and lexical search before ranking.
+- Live Scryfall search is available to the model as a guarded backend-executed tool for candidate discovery when corpus retrieval is thin.
 
 ## Current Preferred Setup
 
@@ -53,6 +55,7 @@ If old card corpus rows were embedded before field formatting changed, delete or
 - `backend/app/api/agent.py` - agent status endpoint.
 - `backend/app/agent/deck_builder.py` - OpenAI/Ollama agent planning and selection.
 - `backend/app/agent/tools.py` - constrained RAG tools plus backend-controlled Scryfall helpers.
+- `backend/app/mcp/scryfall_client.py` - live Scryfall API adapter; this is not a protocol-native MCP server yet.
 - `backend/app/rag/ingestion.py` - source-specific RAG document builders.
 - `backend/app/rag/chunking.py` - text chunking and Scryfall card field formatting.
 - `backend/app/rag/embeddings.py` - OpenAI/FastEmbed/hash providers and cache wrapper.
@@ -63,14 +66,17 @@ If old card corpus rows were embedded before field formatting changed, delete or
 
 - Rules retrieval is better than before but still needs explicit rule-intent mapping.
 - Card-corpus RAG query quality now matters more because the OpenAI agent uses it for candidate discovery before Scryfall price checks.
-- Meta deck snapshots are useful context, not a full metagame database yet.
+- Meta deck snapshots are now retrievable, but `mtgdecks-meta-decks` appears to contain placeholder or incomplete card lists; the actual top deck cards need to be captured and ingested.
 - Candidate scoring is still heuristic and should be refined against real generated deck outputs.
 - The deterministic fallback remains heuristic and should become a real scoring and construction pipeline.
+- The project has deterministic Python "skills", but not model-native/Codex-style skill packages for the deck builder.
+- Scryfall live access is still an internal adapter under `app/mcp`, not a protocol-native MCP server.
+- Agent tool schemas are currently prompt-described Python methods rather than clear first-class tool schemas with precise inputs/results.
 
 ## Recommended Next Work
 
-1. Feed MTGDecks meta deck context more directly into agent prompts and scoring.
-2. Improve rules retrieval by mapping request formats to explicit rule intents.
-3. Add ranked lexical retrieval for text fallback.
-4. Add backend tests around the OpenAI agent tool-plan execution with mocked tool calls.
+1. Fix `mtgdecks-meta-decks` ingestion so meta deck snapshots include the actual top deck card lists, not placeholders; then re-ingest and verify those cards appear in retrieved context.
+2. Convert Scryfall API requests into an actual MCP server/tool integration instead of the current direct `ScryfallClient` adapter.
+3. Define clearer agent tool schemas for strategy search, meta deck search, rules search, card corpus search, live Scryfall search, lookup, and validation.
+4. Improve rules retrieval by mapping request formats to explicit rule intents.
 5. Refine deterministic construction so the evaluator can enforce role counts rather than only ranking candidates.

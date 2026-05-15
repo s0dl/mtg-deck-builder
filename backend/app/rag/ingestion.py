@@ -182,6 +182,7 @@ def load_mtgdecks_meta_decks_file(path: Path) -> list[RagDocumentInput]:
 
     logger.info("Parsed MTGDecks meta deck records", extra=log_extra(record_count=len(records), path=str(path)))
     documents: list[RagDocumentInput] = []
+    skipped_without_cards = 0
     for record in records:
         mtg_format = record.get("format")
         name = record.get("name")
@@ -191,11 +192,17 @@ def load_mtgdecks_meta_decks_file(path: Path) -> list[RagDocumentInput]:
 
         top_deck = record.get("top_deck") if isinstance(record.get("top_deck"), dict) else {}
         cards = top_deck.get("cards", []) if isinstance(top_deck, dict) else []
+        if not cards:
+            skipped_without_cards += 1
+            continue
         card_lines = [
             f"{card.get('count')} {card.get('name')}"
             for card in cards
             if isinstance(card, dict) and card.get("count") and card.get("name")
         ]
+        if not card_lines:
+            skipped_without_cards += 1
+            continue
         content = "\n".join(
             field
             for field in [
@@ -234,7 +241,10 @@ def load_mtgdecks_meta_decks_file(path: Path) -> list[RagDocumentInput]:
                 )
             )
 
-    logger.info("Built MTGDecks meta deck RAG documents", extra=log_extra(document_count=len(documents)))
+    logger.info(
+        "Built MTGDecks meta deck RAG documents",
+        extra=log_extra(document_count=len(documents), skipped_without_cards=skipped_without_cards),
+    )
     return documents
 
 

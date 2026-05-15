@@ -1,6 +1,6 @@
-# MCP Layer
+# Live Data Adapter Layer
 
-The MCP layer owns live Magic data that can change frequently and should not be trusted from stale embeddings.
+This directory currently contains live Magic data adapters. It is not an MCP protocol server yet: there is no MCP transport, server manifest, or externally callable MCP tool registry in this project.
 
 ## Initial Provider
 
@@ -20,3 +20,7 @@ The MCP layer owns live Magic data that can change frequently and should not be 
 ## Boundary
 
 Do not put strategic opinions here. This layer should return live facts. Strategy belongs in RAG and deterministic constraints belong in skills.
+
+## MCP Direction
+
+To make this a real MCP integration, expose the Scryfall operations through an MCP server process and have the agent call those tools through the MCP protocol instead of importing `ScryfallClient` directly.

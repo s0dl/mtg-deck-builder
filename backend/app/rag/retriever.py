@@ -155,11 +155,12 @@ class RagRetriever:
             )
             for term in terms[:6]
         ]
+        candidate_limit = max(limit * 20, 100)
         statement = select(RagDocument).where(or_(*filters))
         if source is not None:
             statement = statement.where(RagDocument.source == source)
         statement = _apply_metadata_filters(statement, metadata_filters)
-        statement = statement.limit(limit)
+        statement = statement.limit(candidate_limit)
         documents = self.session.scalars(statement).all()
 
         results = [
@@ -173,6 +174,7 @@ class RagRetriever:
             for doc in documents
         ]
         results.sort(key=lambda item: item.score or 0, reverse=True)
+        results = results[:limit]
         logger.info(
             "RAG text search completed",
             extra=log_extra(source=source, result_count=len(results)),
@@ -202,13 +204,34 @@ def _score_text_match(title: str, content: str, terms: list[str], metadata: dict
     title_lower = title.lower()
     content_lower = content.lower()
     metadata_text = " ".join(str(value).lower() for value in metadata.values() if value)
+    searchable = " ".join([title_lower, content_lower, metadata_text])
+    normalized_terms = [TOKEN_REPLACEMENTS.get(term.lower(), term.lower()) for term in terms]
+    phrase = " ".join(normalized_terms)
     score = 0.0
-    for term in terms:
-        normalized = TOKEN_REPLACEMENTS.get(term.lower(), term.lower())
+    if phrase:
+        if phrase in title_lower:
+            score += 25.0
+        if phrase in metadata_text:
+            score += 15.0
+        if phrase in content_lower:
+            score += 8.0
+    matched_terms = 0
+    for normalized in normalized_terms:
         if normalized in title_lower:
             score += 4.0
+            matched_terms += 1
+            continue
         if normalized in metadata_text:
             score += 3.0
+            matched_terms += 1
+            continue
         if normalized in content_lower:
             score += 1.0
+            matched_terms += 1
+    if normalized_terms and matched_terms == len(normalized_terms):
+        score += 10.0
+    elif matched_terms:
+        score += matched_terms / len(normalized_terms)
+    if phrase and phrase not in searchable and len(normalized_terms) > 1 and matched_terms < len(normalized_terms):
+        score -= 2.0
     return score

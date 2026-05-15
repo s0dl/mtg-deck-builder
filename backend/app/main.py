@@ -31,7 +31,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MTG Deck Builder Agent",
         version="0.1.0",
-        description="MCP, RAG, and deterministic skills for Magic deck construction.",
+        description="RAG, live Scryfall adapters, and deterministic skills for Magic deck construction.",
     )
 
     app.add_middleware(

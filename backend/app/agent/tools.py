@@ -90,18 +90,56 @@ class DeckAgentTools:
         mtg_format: Format | None = None,
         limit: int = 8,
     ) -> list[dict[str, Any]]:
+        article_limit = max(1, limit // 2)
+        meta_limit = max(1, limit - article_limit)
+        documents = [
+            *self._search_strategy_source(
+                query=query,
+                source="mtgdecks_articles",
+                mtg_format=mtg_format,
+                limit=article_limit,
+            ),
+            *self._search_strategy_source(
+                query=query,
+                source="mtgdecks_meta_decks",
+                mtg_format=mtg_format,
+                limit=meta_limit,
+            ),
+        ]
+        return [_document_payload(document) for document in _dedupe_documents(documents)[:limit]]
+
+    def search_meta_decks(
+        self,
+        query: str,
+        mtg_format: Format | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        return [
+            _document_payload(document)
+            for document in self._search_strategy_source(
+                query=query,
+                source="mtgdecks_meta_decks",
+                mtg_format=mtg_format,
+                limit=limit,
+            )
+        ]
+
+    def _search_strategy_source(
+        self,
+        query: str,
+        source: str,
+        mtg_format: Format | None,
+        limit: int,
+    ) -> list[RetrievedDocument]:
         metadata_filters = None
         if mtg_format is not None and mtg_format != Format.casual:
             metadata_filters = {"format": [mtg_format.value, ""]}
-        return [
-            _document_payload(document)
-            for document in self.retriever.search_text(
-                query=query,
-                limit=limit,
-                source="mtgdecks_articles",
-                metadata_filters=metadata_filters,
-            )
-        ]
+        return self.retriever.search_text(
+            query=query,
+            limit=limit,
+            source=source,
+            metadata_filters=metadata_filters,
+        )
 
     def search_rules(self, intent: str, limit: int = 6) -> list[dict[str, Any]]:
         return [
@@ -120,7 +158,13 @@ class DeckAgentTools:
         limit: int = 20,
         request: DeckRequest | None = None,
     ) -> list[dict[str, Any]]:
-        documents = self.retriever.search(query=query, limit=max(limit * 4, 50), source="scryfall_bulk")
+        search_limit = max(limit * 6, 80)
+        documents = _dedupe_documents(
+            [
+                *self.retriever.search(query=query, limit=search_limit, source="scryfall_bulk"),
+                *self.retriever.search_text(query=query, limit=search_limit, source="scryfall_bulk"),
+            ]
+        )
         ranked: list[tuple[float, RetrievedDocument]] = []
         for document in documents:
             if not _is_allowed_card_document(document, query=query, mtg_format=mtg_format, request=request):
@@ -237,3 +281,16 @@ def _document_text(document: RetrievedDocument) -> str:
             " ".join(str(value) for value in document.metadata.values() if value),
         ]
     ).lower()
+
+
+def _dedupe_documents(documents: list[RetrievedDocument]) -> list[RetrievedDocument]:
+    deduped: list[RetrievedDocument] = []
+    seen: set[tuple[str, str]] = set()
+    for document in documents:
+        name = str(document.metadata.get("name") or document.metadata.get("archetype") or document.title)
+        key = (document.source, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(document)
+    return deduped

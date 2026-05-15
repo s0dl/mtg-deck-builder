@@ -430,3 +430,31 @@ def test_response_context_documents_orders_strategy_rules_then_cards() -> None:
         "Rule 100.2",
         "Lightning Bolt",
     ]
+
+
+def test_response_context_documents_includes_meta_decks_near_top() -> None:
+    strategies = [
+        RetrievedDocument(
+            title=f"Strategy {index}",
+            content="",
+            source="mtgdecks_articles",
+            metadata={},
+        )
+        for index in range(12)
+    ]
+    meta_deck = RetrievedDocument(
+        title="Izzet Prowess (Modern)",
+        content="Top deck cards: Monastery Swiftspear",
+        source="mtgdecks_meta_decks",
+        metadata={"format": "modern", "archetype": "Izzet Prowess"},
+    )
+
+    documents = _response_context_documents(
+        card_context=[],
+        rules_context=[],
+        strategy_context=[*strategies, meta_deck],
+        mtg_format=Format.modern,
+        requested_colors={"U", "R"},
+    )
+
+    assert "Izzet Prowess (Modern)" in [document.title for document in documents[:7]]

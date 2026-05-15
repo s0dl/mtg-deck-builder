@@ -85,3 +85,19 @@ def test_evaluate_candidate_document_penalizes_expensive_cards_for_budget() -> N
     expensive_evaluation = evaluate_candidate_document(expensive_land, request)
 
     assert cheap_evaluation.score > expensive_evaluation.score
+
+
+def test_evaluate_candidate_document_uses_high_budget_as_power_ceiling() -> None:
+    request = DeckRequest(format=Format.modern, colors=["U", "R"], budget_usd=600)
+    cheap_land = card_document("Shivan Reef", type_line="Land", color_identity=["U", "R"], price=0.75)
+    premium_land = card_document(
+        "Steam Vents",
+        type_line="Land - Island Mountain",
+        color_identity=["U", "R"],
+        price=20.0,
+    )
+
+    cheap_evaluation = evaluate_candidate_document(cheap_land, request)
+    premium_evaluation = evaluate_candidate_document(premium_land, request)
+
+    assert premium_evaluation.score > cheap_evaluation.score

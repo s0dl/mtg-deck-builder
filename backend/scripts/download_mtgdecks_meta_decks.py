@@ -32,6 +32,17 @@ DECKLIST_PATH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CARD_LINE_PATTERN = re.compile(r"^(?P<count>\d+)\s+(?P<name>[^#]+?)(?:\s+\$?[0-9].*)?$")
+COUNT_PATTERN = re.compile(r"^\d+$")
+DECK_SECTION_START_PATTERN = re.compile(r"^Maindeck(?:\s*\(\d+\))?$", re.IGNORECASE)
+DECK_SECTION_ENDINGS = (
+    "buy this deck",
+    "deck tools",
+    "export & save",
+    "embedding code",
+    "if you find any error",
+    "suggest archetype",
+    "last update",
+)
 NON_ARCHETYPE_SLUGS = {
     "analysis",
     "budget",
@@ -42,6 +53,7 @@ NON_ARCHETYPE_SLUGS = {
     "price",
     "staples",
     "tournaments",
+    "winrates",
 }
 logger = logging.getLogger(__name__)
 
@@ -133,6 +145,8 @@ def parse_format_page(page_html: str, page_url: str, mtg_format: str, top: int) 
         slug = path.rstrip("/").rsplit("/", 1)[-1].lower()
         if slug in NON_ARCHETYPE_SLUGS:
             continue
+        if ":" in slug:
+            continue
         if DECKLIST_PATH_PATTERN.match(path):
             continue
         if path.rstrip("/").count("/") != 2:
@@ -170,8 +184,10 @@ def parse_decklist_page(page_html: str, page_url: str) -> dict[str, object]:
     parser.feed(page_html)
     cards: list[dict[str, object]] = []
     seen_lines: set[str] = set()
+    start_index, end_index = deck_text_bounds(parser.texts)
+    deck_texts = parser.texts[start_index:end_index]
 
-    for text in parser.texts:
+    for text in deck_texts:
         if text in seen_lines:
             continue
         seen_lines.add(text)
@@ -184,7 +200,62 @@ def parse_decklist_page(page_html: str, page_url: str) -> dict[str, object]:
             continue
         cards.append({"count": count, "name": name})
 
+    if not cards:
+        cards.extend(cards_from_quantity_links(parser.links, parser.texts, start_index, end_index))
+
     return {"url": page_url, "cards": cards}
+
+
+def deck_text_bounds(texts: list[str]) -> tuple[int, int]:
+    start = len(texts)
+    for index, text in enumerate(texts):
+        if DECK_SECTION_START_PATTERN.match(text):
+            start = index + 1
+            break
+
+    end = len(texts)
+    for index in range(start, len(texts)):
+        lowered = texts[index].lower()
+        if any(lowered.startswith(ending) for ending in DECK_SECTION_ENDINGS):
+            end = index
+            break
+
+    return start, end
+
+
+def cards_from_quantity_links(
+    links: list[LinkRecord],
+    texts: list[str],
+    start_index: int,
+    end_index: int,
+) -> list[dict[str, object]]:
+    cards: list[dict[str, object]] = []
+    for link in links:
+        if link.index < start_index or link.index >= end_index:
+            continue
+        card_text_index = find_link_text_index(texts, link.text, start_index, link.index)
+        if card_text_index is None or card_text_index == 0:
+            continue
+        count_text = texts[card_text_index - 1]
+        if not COUNT_PATTERN.match(count_text):
+            continue
+        name = clean_card_name(link.text)
+        if not name or should_skip_card_line(name):
+            continue
+        cards.append({"count": int(count_text), "name": name})
+    return cards
+
+
+def find_link_text_index(
+    texts: list[str],
+    link_text: str,
+    start_index: int,
+    end_index: int,
+) -> int | None:
+    for index in range(min(end_index, len(texts)) - 1, start_index - 1, -1):
+        if texts[index] == link_text:
+            return index
+    return None
 
 
 def nearby_percentage(texts: list[str], link_index: int) -> float | None:

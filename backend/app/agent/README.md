@@ -7,13 +7,14 @@ This directory contains model-backed deck-building agents and the constrained to
 - `OpenAIDeckAgent` receives initial strategy/rules RAG context, plans extra RAG calls, then selects cards from card-corpus results.
 - `OllamaDeckAgent` remains available for local experimentation.
 - `DeckAgentTools.search_strategy()` queries strategy/meta RAG documents.
+- `DeckAgentTools.search_meta_decks()` queries MTGDecks archetype/top-deck snapshots directly.
 - `DeckAgentTools.search_rules()` queries rules RAG documents.
-- `DeckAgentTools.search_card_corpus()` queries embedded Scryfall card corpus documents.
-- `DeckAgentTools.search_cards_scryfall()` and `lookup_card()` remain available for backend-controlled live checks.
+- `DeckAgentTools.search_card_corpus()` queries embedded Scryfall card corpus documents using vector and text retrieval.
+- `DeckAgentTools.search_cards_scryfall()` and `lookup_card()` provide guarded live Scryfall access.
 - `DeckAgentTools.validate_deck_cards()` runs deterministic backend validation.
 
 The backend executes tools and final validation. The model chooses what to ask for, but it does not get arbitrary code execution.
-Live Scryfall is used after validation to refresh prices and card facts, not as the first card-candidate source for the OpenAI agent.
+Live Scryfall can be used for candidate discovery when the embedded corpus is too thin, and is also used after validation to refresh prices and card facts.
 
 ## OpenAI Setup
 

@@ -20,12 +20,14 @@ logger = logging.getLogger(__name__)
 AGENT_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["thoughts", "strategy_queries", "rules_queries", "card_queries"],
+    "required": ["thoughts", "strategy_queries", "meta_deck_queries", "rules_queries", "card_queries", "scryfall_queries"],
     "properties": {
         "thoughts": {"type": "array", "items": {"type": "string"}},
         "strategy_queries": {"type": "array", "items": {"type": "string"}},
+        "meta_deck_queries": {"type": "array", "items": {"type": "string"}},
         "rules_queries": {"type": "array", "items": {"type": "string"}},
         "card_queries": {"type": "array", "items": {"type": "string"}},
+        "scryfall_queries": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -106,6 +108,7 @@ class AbstractDeckAgent(ABC):
         result["agent_steps"] = steps
         result["tool_card_names"] = _tool_card_names(tool_results)
         result["tool_card_payloads"] = _tool_card_payloads(tool_results)
+        result["tool_context_payloads"] = _tool_context_payloads(tool_results)
         return result
 
     @property
@@ -166,9 +169,12 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "role": "system",
                     "content": (
                         "You are a constrained Magic: The Gathering deck-building agent. "
-                        "Plan only the extra RAG tool calls needed before deck construction. "
-                        "Use card corpus searches for candidate cards. Live Scryfall is reserved "
-                        "for backend verification and price checks after validation."
+                        "Plan only the extra tool calls needed before deck construction. "
+                        "Use strategy and meta-deck searches to learn archetype structure. "
+                        "Use broad card corpus searches for candidate packages, not one-card lookups. "
+                        "Use live Scryfall searches when corpus retrieval is likely too narrow or when "
+                        "you need current format-legal candidates. Keep Scryfall queries broad enough "
+                        "to return many cards, e.g. format/color/type plus 1-2 oracle terms."
                     ),
                 },
                 {
@@ -178,8 +184,10 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "request": request.model_dump(mode="json"),
                             "available_tools": [
                                 "search_strategy(query, format, limit)",
+                                "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
                                 "search_card_corpus(query, format, limit)",
+                                "search_cards_scryfall(query, limit)",
                             ],
                             "initial_candidate_cards": [
                                 _document_to_model_context(document) for document in card_context[:24]
@@ -216,6 +224,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
     ) -> dict[str, Any]:
         results: dict[str, Any] = {
             "strategy": [],
+            "meta_decks": [],
             "rules": [],
             "card_corpus": [],
             "cards": [],
@@ -229,6 +238,16 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "label": "RAG strategy search",
                     "detail": f"{query} -> {len(documents)} documents",
+                }
+            )
+
+        for query in _string_list(plan.get("meta_deck_queries"))[:3]:
+            documents = self.tools.search_meta_decks(query=query, mtg_format=request.format, limit=8)
+            results["meta_decks"].extend(documents)
+            steps.append(
+                {
+                    "label": "RAG meta deck search",
+                    "detail": f"{query} -> {len(documents)} meta deck documents",
                 }
             )
 
@@ -249,6 +268,20 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "label": "RAG card corpus search",
                     "detail": f"{query} -> {len(documents)} card documents",
+                }
+            )
+
+        for query in _string_list(plan.get("scryfall_queries"))[:3]:
+            try:
+                documents = await self.tools.search_cards_scryfall(query=query, limit=20)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Live Scryfall search failed", "detail": f"{query} -> {exc}"})
+                continue
+            results["cards"].extend(documents)
+            steps.append(
+                {
+                    "label": "Live Scryfall search",
+                    "detail": f"{query} -> {len(documents)} live cards",
                 }
             )
 
@@ -281,12 +314,10 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         "Commander decks need exactly 100 cards, non-basic cards are limited to four "
                         "copies in constructed, and Commander should use one copy of each non-basic. "
                         "Choose counts from 1 to 4 based on role: 4 for core cards, 2-3 for support "
-                        "cards, and 1 for narrow, expensive, situational, or legendary cards. Value "
-                        "budget_usd highly; if the user provides a budget, try to keep the final "
-                        "estimated deck cost at or below that budget. When prices are present, prefer "
-                        "lower estimated_price_usd options that still support the strategy, reduce "
-                        "counts of expensive support cards, and avoid expensive mana bases unless the "
-                        "budget can support them."
+                        "cards, and 1 for narrow, expensive, situational, or legendary cards. Treat "
+                        "budget_usd as a ceiling for power, not as a request for the cheapest possible "
+                        "deck. For high budgets, prefer meta-proven staples and premium mana bases if "
+                        "they improve the deck while staying under budget."
                     ),
                 },
                 {
@@ -294,6 +325,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "budget_guidance": _budget_guidance(request),
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
                             "retrieved_rules_context": [
@@ -302,10 +334,14 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "retrieved_strategy_context": [
                                 _document_to_model_context(document) for document in strategy_context[:8]
                             ],
+                            "retrieved_meta_deck_context": [
+                                payload for payload in tool_results.get("meta_decks", [])[:8] if isinstance(payload, dict)
+                            ],
                             "instructions": (
                                 "Pick 8 to 18 card names that best fit the request. Include useful "
-                                "nonbasic lands when they fit the colors, format, and budget. Prefer "
-                                "lower estimated prices when the request includes a budget. Return "
+                                "nonbasic lands when they fit the colors, format, and budget. Use more "
+                                "of a large budget for stronger staples instead of defaulting to the "
+                                "cheapest legal cards. Return "
                                 "selected_cards with exact name, count, and short role."
                             ),
                         },
@@ -366,7 +402,7 @@ def _land_corpus_queries(request: DeckRequest) -> list[str]:
     }
     colors = [color.upper() for color in request.colors if color.upper() in color_names]
     color_text = " ".join([*colors, *(color_names[color] for color in colors)])
-    budget_text = "cheap budget low price" if request.budget_usd is not None else "mana fixing"
+    budget_text = _land_budget_terms(request)
     format_text = request.format.value
     queries = [
         f"{format_text} land {color_text} color identity mana fixing {budget_text}".strip(),
@@ -402,6 +438,55 @@ def _tool_card_payloads(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
             seen.add(name)
             payloads.append(item)
     return payloads
+
+
+def _tool_context_payloads(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for bucket in ("meta_decks", "strategy", "rules"):
+        for item in tool_results.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title")
+            source = item.get("source")
+            if not isinstance(title, str) or not isinstance(source, str):
+                continue
+            key = (source, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            payloads.append(item)
+    return payloads
+
+
+def _budget_guidance(request: DeckRequest) -> str:
+    if request.budget_usd is None:
+        return "No budget was provided; optimize for card quality and synergy."
+    if request.budget_usd >= 300:
+        return (
+            f"Budget is ${request.budget_usd:.0f}. This is a high ceiling: optimize for power, "
+            "meta relevance, and premium mana while staying under budget. Do not choose budget "
+            "substitutes just because they are cheaper."
+        )
+    if request.budget_usd >= 100:
+        return (
+            f"Budget is ${request.budget_usd:.0f}. Use efficient staples and solid mana, but avoid "
+            "luxury upgrades that crowd out core cards."
+        )
+    return (
+        f"Budget is ${request.budget_usd:.0f}. This is a tight budget: prefer low-price cards and "
+        "avoid expensive lands unless they are essential."
+    )
+
+
+def _land_budget_terms(request: DeckRequest) -> str:
+    if request.budget_usd is None:
+        return "mana fixing"
+    if request.budget_usd >= 300:
+        return "premium mana fixing fetch shock surveil triome staple"
+    if request.budget_usd >= 100:
+        return "strong mana fixing dual shock pain fast slow check"
+    return "cheap budget low price mana fixing"
 
 
 def _candidate_payloads(
@@ -465,9 +550,12 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                     "content": (
                         "You are a constrained Magic: The Gathering deck-building agent. "
                         "You already have initial RAG strategy and rules context. Plan extra RAG "
-                        "tool calls for strategy, rules, and the embedded Scryfall card corpus. "
-                        "Do not use live Scryfall for candidate discovery; the backend uses it "
-                        "after deterministic validation to check current prices."
+                        "tool calls for strategy, meta decks, rules, the embedded Scryfall card corpus, "
+                        "and guarded live Scryfall search. Use meta-deck searches to recover archetype "
+                        "staples and role balance. Use broad card corpus queries for packages of cards, "
+                        "not one-card lookups. Use live Scryfall when the corpus may be stale or too thin; "
+                        "queries must include format and color identity constraints and should be broad "
+                        "enough to return many legal candidates."
                     ),
                 },
                 {
@@ -477,8 +565,10 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                             "request": request.model_dump(mode="json"),
                             "available_tools": [
                                 "search_strategy(query, format, limit)",
+                                "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
                                 "search_card_corpus(query, format, limit)",
+                                "search_cards_scryfall(query, limit)",
                             ],
                             "initial_candidate_cards": [],
                             "retrieved_rules_context": [
@@ -507,12 +597,17 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         return plan
 
     async def _run_tool_plan(self, request: DeckRequest, plan: dict[str, Any], steps: list[dict[str, str]]) -> dict[str, Any]:
-        results: dict[str, Any] = {"strategy": [], "rules": [], "card_corpus": [], "cards": [], "lookups": []}
+        results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": [], "card_corpus": [], "cards": [], "lookups": []}
 
         for query in _string_list(plan.get("strategy_queries"))[:4]:
             documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=8)
             results["strategy"].extend(documents)
             steps.append({"label": "RAG strategy search", "detail": f"{query} -> {len(documents)} documents"})
+
+        for query in _string_list(plan.get("meta_deck_queries"))[:4]:
+            documents = self.tools.search_meta_decks(query=query, mtg_format=request.format, limit=10)
+            results["meta_decks"].extend(documents)
+            steps.append({"label": "RAG meta deck search", "detail": f"{query} -> {len(documents)} meta deck documents"})
 
         for query in _string_list(plan.get("rules_queries"))[:3]:
             documents = self.tools.search_rules(intent=query, limit=6)
@@ -528,6 +623,15 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             documents = self.tools.search_card_corpus(query=query, mtg_format=request.format, limit=16, request=request)
             results["card_corpus"].extend(documents)
             steps.append({"label": "RAG land corpus search", "detail": f"{query} -> {len(documents)} land documents"})
+
+        for query in _string_list(plan.get("scryfall_queries"))[:4]:
+            try:
+                documents = await self.tools.search_cards_scryfall(query=query, limit=24)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Live Scryfall search failed", "detail": f"{query} -> {exc}"})
+                continue
+            results["cards"].extend(documents)
+            steps.append({"label": "Live Scryfall search", "detail": f"{query} -> {len(documents)} live cards"})
 
         return results
 
@@ -556,12 +660,10 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                         "Commander decks need exactly 100 cards, non-basic cards are limited to four "
                         "copies in constructed, and Commander should use one copy of each non-basic. "
                         "Choose counts from 1 to 4 based on role: 4 for core cards, 2-3 for support "
-                        "cards, and 1 for narrow, expensive, situational, or legendary cards. Value "
-                        "budget_usd highly; if the user provides a budget, try to keep the final "
-                        "estimated deck cost at or below that budget. When prices are present, prefer "
-                        "lower estimated_price_usd options that still support the strategy, reduce "
-                        "counts of expensive support cards, and avoid expensive mana bases unless the "
-                        "budget can support them."
+                        "cards, and 1 for narrow, expensive, situational, or legendary cards. Treat "
+                        "budget_usd as a ceiling for power, not as a request for the cheapest possible "
+                        "deck. For high budgets, prefer meta-proven staples and premium mana bases if "
+                        "they improve the deck while staying under budget."
                     ),
                 },
                 {
@@ -569,6 +671,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "budget_guidance": _budget_guidance(request),
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
                             "retrieved_rules_context": [
@@ -577,11 +680,15 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                             "retrieved_strategy_context": [
                                 _document_to_model_context(document) for document in strategy_context[:18]
                             ],
+                            "retrieved_meta_deck_context": [
+                                payload for payload in tool_results.get("meta_decks", [])[:12] if isinstance(payload, dict)
+                            ],
                             "agent_tool_results": tool_results,
                             "instructions": (
                                 "Pick 8 to 22 cards. Use exact candidate names. Include mana-fixing "
-                                "lands that fit the colors and format. If budget_usd is present, prefer "
-                                "candidate lands and spells with lower estimated_price_usd. Explain the "
+                                "lands that fit the colors and format. If budget_usd is high, use it "
+                                "for stronger staples and a better mana base instead of defaulting to "
+                                "the cheapest legal candidates. Explain the "
                                 "deck's plan using retrieved strategy/rules and card corpus data. Return "
                                 "selected_cards with exact name, count, and role."
                             ),

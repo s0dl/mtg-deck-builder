@@ -4,16 +4,36 @@ from app.rag.retriever import RetrievedDocument
 
 
 class FakeRetriever:
-    def __init__(self, documents: list[RetrievedDocument]) -> None:
+    def __init__(
+        self,
+        documents: list[RetrievedDocument],
+        text_documents: list[RetrievedDocument] | None = None,
+    ) -> None:
         self.documents = documents
+        self.text_documents = text_documents if text_documents is not None else []
         self.last_limit: int | None = None
 
     def search(self, query: str, limit: int = 5, source: str | None = None) -> list[RetrievedDocument]:
         self.last_limit = limit
-        return self.documents[:limit]
+        return [document for document in self.documents if source is None or document.source == source][:limit]
 
-    def search_text(self, *args, **kwargs):
-        return []
+    def search_text(
+        self,
+        query: str,
+        limit: int = 5,
+        source: str | None = None,
+        metadata_filters: dict[str, list[str]] | None = None,
+    ):
+        documents = [document for document in self.text_documents if source is None or document.source == source]
+        if metadata_filters:
+            for key, values in metadata_filters.items():
+                normalized_values = {value.lower() for value in values}
+                documents = [
+                    document
+                    for document in documents
+                    if str(document.metadata.get(key) or "").lower() in normalized_values
+                ]
+        return documents[:limit]
 
 
 def card_document(
@@ -61,7 +81,7 @@ def test_search_card_corpus_filters_legality_colors_and_lands() -> None:
     )
 
     assert [result["title"] for result in results] == ["Monastery Swiftspear"]
-    assert retriever.last_limit == 50
+    assert retriever.last_limit == 80
 
 
 def test_search_card_corpus_land_queries_return_budget_lands_first() -> None:
@@ -93,3 +113,40 @@ def test_search_card_corpus_land_queries_return_budget_lands_first() -> None:
     )
 
     assert [result["title"] for result in results] == ["Shivan Reef", "Steam Vents"]
+
+
+def test_search_strategy_includes_meta_deck_documents() -> None:
+    article = RetrievedDocument(
+        title="Modern Izzet Prowess Guide",
+        content="Tempo strategy",
+        source="mtgdecks_articles",
+        metadata={"format": "modern"},
+    )
+    meta_deck = RetrievedDocument(
+        title="Izzet Prowess (Modern)",
+        content="Top deck cards: Monastery Swiftspear",
+        source="mtgdecks_meta_decks",
+        metadata={"format": "modern", "archetype": "Izzet Prowess"},
+    )
+    retriever = FakeRetriever([], text_documents=[article, meta_deck])
+    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+
+    results = tools.search_strategy(query="modern izzet prowess", mtg_format=Format.modern, limit=4)
+
+    assert [result["source"] for result in results] == ["mtgdecks_articles", "mtgdecks_meta_decks"]
+
+
+def test_search_card_corpus_combines_vector_and_text_results() -> None:
+    vector_card = card_document("Monastery Swiftspear", colors=["R"], content="prowess haste")
+    text_card = card_document("Slickshot Show-Off", colors=["R"], content="flying haste prowess")
+    retriever = FakeRetriever([vector_card], text_documents=[text_card])
+    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+
+    results = tools.search_card_corpus(
+        query="modern red prowess",
+        mtg_format=Format.modern,
+        request=DeckRequest(format=Format.modern, colors=["R"], strategy="prowess"),
+        limit=10,
+    )
+
+    assert {result["title"] for result in results} == {"Monastery Swiftspear", "Slickshot Show-Off"}

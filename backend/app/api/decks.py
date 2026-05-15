@@ -378,6 +378,33 @@ def _land_price(document: RetrievedDocument) -> float:
     return 9999.0
 
 
+def _land_quality_score(document: RetrievedDocument) -> float:
+    text = " ".join(
+        [
+            document.title,
+            str(document.metadata.get("type_line") or ""),
+            document.content,
+        ]
+    ).lower()
+    score = 0.0
+    for term, weight in {
+        "fetch": 5.0,
+        "shock": 4.0,
+        "surveil": 3.0,
+        "triome": 3.0,
+        "fast": 2.0,
+        "pathway": 2.0,
+        "pain": 1.5,
+        "check": 1.0,
+    }.items():
+        if term in text:
+            score += weight
+    price = _land_price(document)
+    if price < 9999.0:
+        score += min(price / 10.0, 3.0)
+    return score
+
+
 def _recommended_land_documents(
     request: DeckRequest,
     documents: list[RetrievedDocument],
@@ -396,6 +423,8 @@ def _recommended_land_documents(
         seen.add(name)
         lands.append(document)
 
+    if request.budget_usd is not None and request.budget_usd >= 300:
+        return sorted(lands, key=lambda document: (-_land_quality_score(document), document.title))
     return sorted(lands, key=lambda document: (_land_price(document), document.title))
 
 
@@ -735,8 +764,11 @@ def _response_context_documents(
     mtg_format: Format,
     requested_colors: set[str],
 ) -> list[RetrievedDocument]:
+    meta_context = [item for item in strategy_context if item.source == "mtgdecks_meta_decks"]
+    non_meta_strategy = [item for item in strategy_context if item.source != "mtgdecks_meta_decks"]
     return [
-        *strategy_context[:10],
+        *non_meta_strategy[:6],
+        *meta_context[:6],
         *rules_context[:4],
         *[
             item
@@ -822,6 +854,27 @@ def _documents_from_agent_card_payloads(agent_result: dict) -> list[RetrievedDoc
                 content=str(payload.get("content") or ""),
                 source=str(payload.get("source") or "scryfall_live"),
                 metadata=metadata,
+            )
+        )
+    return documents
+
+
+def _documents_from_agent_context_payloads(agent_result: dict) -> list[RetrievedDocument]:
+    documents: list[RetrievedDocument] = []
+    for payload in agent_result.get("tool_context_payloads", []):
+        if not isinstance(payload, dict):
+            continue
+        title = payload.get("title")
+        source = payload.get("source")
+        if not isinstance(title, str) or not isinstance(source, str):
+            continue
+        documents.append(
+            RetrievedDocument(
+                title=title,
+                content=str(payload.get("content") or ""),
+                source=source,
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+                score=payload.get("score") if isinstance(payload.get("score"), int | float) else None,
             )
         )
     return documents
@@ -918,6 +971,12 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         [
             *strategy_context,
             *retriever.search_text(
+                query=_strategy_query(request, candidate_query) or f"{request.format.value} metagame decks",
+                limit=30,
+                source="mtgdecks_meta_decks",
+                metadata_filters={"format": [request.format.value]} if request.format != Format.casual else None,
+            ),
+            *retriever.search_text(
                 query=general_strategy_query,
                 limit=30,
                 source="mtgdecks_articles",
@@ -1006,6 +1065,9 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
+            strategy_context = _dedupe_documents(
+                [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]
+            )
             context = [*card_context, *rules_context]
             model_card_context = [
                 item
@@ -1102,6 +1164,9 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
+            strategy_context = _dedupe_documents(
+                [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]
+            )
             context = [*card_context, *rules_context]
             model_card_context = [
                 item
