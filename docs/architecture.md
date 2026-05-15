@@ -67,13 +67,15 @@ The backend also finalizes model-selected cards by merging duplicates, trimming 
 1. The frontend submits a `DeckRequest`.
 2. FastAPI creates a request-scoped database session.
 3. The backend retrieves strategy, rules, and meta context from RAG.
-4. If the OpenAI agent is enabled, the model receives that context and plans extra RAG calls for strategy/rules plus live Scryfall card searches.
-5. The backend executes those constrained tool calls.
-6. The model selects cards from the returned live Scryfall context.
-7. The backend merges, trims, sizes, and validates the deck.
-8. The backend calls Scryfall to refresh prices after validation.
-9. If the agent path fails, the backend falls back to deterministic construction.
-10. The response includes cards, validation, mana curve, retrieved context, `agent_steps`, and `generation_mode`.
+4. If the OpenAI agent is enabled, the model first plans extra RAG calls for strategy/meta/rules context.
+5. The backend executes those constrained RAG tool calls and feeds the returned documents back to the model.
+6. The model then plans live Scryfall searches from the retrieved documents.
+7. The backend executes those live Scryfall searches.
+8. The model selects cards from the returned live Scryfall context.
+9. The backend merges, trims, sizes, and validates the deck.
+10. The backend calls Scryfall to refresh prices after validation.
+11. If the agent path fails, the backend falls back to deterministic construction.
+12. The response includes cards, validation, mana curve, retrieved context, `agent_steps`, and `generation_mode`.
 
 ## Data Flow
 

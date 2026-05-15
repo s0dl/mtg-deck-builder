@@ -1271,8 +1271,8 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     raise ValueError(f"OpenAI deck failed validation: {validation.errors}")
                 agent_steps.append(
                     {
-                        "label": "OpenAI drafting",
-                        "detail": "Model received retrieved strategy/rules context and candidate card context.",
+                        "label": "OpenAI selection",
+                        "detail": "Model received retrieved strategy/rules context and live Scryfall candidate context.",
                     }
                 )
                 agent_steps.append(

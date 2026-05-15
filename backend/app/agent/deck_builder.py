@@ -17,15 +17,24 @@ from app.skills.deck_evaluation import rank_candidate_cards
 
 logger = logging.getLogger(__name__)
 
-AGENT_PLAN_SCHEMA: dict[str, Any] = {
+AGENT_RAG_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["thoughts", "strategy_queries", "meta_deck_queries", "rules_queries", "scryfall_queries"],
+    "required": ["thoughts", "strategy_queries", "meta_deck_queries", "rules_queries"],
     "properties": {
         "thoughts": {"type": "array", "items": {"type": "string"}},
         "strategy_queries": {"type": "array", "items": {"type": "string"}},
         "meta_deck_queries": {"type": "array", "items": {"type": "string"}},
         "rules_queries": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+AGENT_SCRYFALL_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["thoughts", "scryfall_queries"],
+    "properties": {
+        "thoughts": {"type": "array", "items": {"type": "string"}},
         "scryfall_queries": {"type": "array", "items": {"type": "string"}},
     },
 }
@@ -78,26 +87,42 @@ class AbstractDeckAgent(ABC):
                 ),
             }
         ]
-        plan = await self._plan(request, card_context, rules_context, strategy_context)
+        rag_plan = await self._plan_rag(request, rules_context, strategy_context)
         steps.append(
             {
-                "label": "GPT tool plan",
+                "label": "GPT RAG plan",
                 "detail": (
-                    f"Planned {len(_string_list(plan.get('strategy_queries')))} strategy, "
-                    f"{len(_string_list(plan.get('rules_queries')))} rules, and "
-                    f"{len(_string_list(plan.get('scryfall_queries')))} live Scryfall searches."
+                    f"Planned {len(_string_list(rag_plan.get('strategy_queries')))} strategy, "
+                    f"{len(_string_list(rag_plan.get('meta_deck_queries')))} meta deck, and "
+                    f"{len(_string_list(rag_plan.get('rules_queries')))} rules searches."
                 ),
             }
         )
-        for thought in _string_list(plan.get("thoughts"))[:4]:
+        for thought in _string_list(rag_plan.get("thoughts"))[:4]:
             steps.append({"label": self.thought_label, "detail": thought})
 
-        tool_results = await self._run_tool_plan(request, plan, steps)
+        rag_results = await self._run_rag_tool_plan(request, rag_plan, steps)
+        rag_context = _aggregate_rag_context(strategy_context, rules_context, rag_results)
+
+        scryfall_plan = await self._plan_scryfall(request, rag_context)
+        steps.append(
+            {
+                "label": "GPT Scryfall plan",
+                "detail": (
+                    f"Planned {len(_string_list(scryfall_plan.get('scryfall_queries')))} live Scryfall searches "
+                    "from retrieved RAG context."
+                ),
+            }
+        )
+        for thought in _string_list(scryfall_plan.get("thoughts"))[:4]:
+            steps.append({"label": self.thought_label, "detail": thought})
+
+        tool_results = await self._run_scryfall_tool_plan(request, scryfall_plan, rag_context, steps, rag_results)
         result = await self._select_cards(
             request=request,
             card_context=card_context,
-            rules_context=rules_context,
-            strategy_context=strategy_context,
+            rules_context=rag_context["rules"],
+            strategy_context=rag_context["strategy"],
             tool_results=tool_results,
             land_guidance=land_guidance,
         )
@@ -119,23 +144,41 @@ class AbstractDeckAgent(ABC):
         """Human-readable label for model reasoning snippets."""
 
     @abstractmethod
-    async def _plan(
+    async def _plan_rag(
         self,
         request: DeckRequest,
-        card_context: list[RetrievedDocument],
         rules_context: list[RetrievedDocument],
         strategy_context: list[RetrievedDocument],
     ) -> dict[str, Any]:
-        """Return a normalized agent plan matching AGENT_PLAN_SCHEMA."""
+        """Return a normalized RAG plan matching AGENT_RAG_PLAN_SCHEMA."""
 
     @abstractmethod
-    async def _run_tool_plan(
+    async def _plan_scryfall(
+        self,
+        request: DeckRequest,
+        rag_context: dict[str, list[RetrievedDocument]],
+    ) -> dict[str, Any]:
+        """Return a normalized live Scryfall plan matching AGENT_SCRYFALL_PLAN_SCHEMA."""
+
+    @abstractmethod
+    async def _run_rag_tool_plan(
         self,
         request: DeckRequest,
         plan: dict[str, Any],
         steps: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Execute backend tools requested by the plan and return normalized tool results."""
+        """Execute backend RAG tools requested by the plan and return normalized results."""
+
+    @abstractmethod
+    async def _run_scryfall_tool_plan(
+        self,
+        request: DeckRequest,
+        plan: dict[str, Any],
+        rag_context: dict[str, list[RetrievedDocument]],
+        steps: list[dict[str, str]],
+        rag_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute live Scryfall tools requested by the plan and return normalized tool results."""
 
     @abstractmethod
     async def _select_cards(
@@ -155,28 +198,24 @@ class OllamaDeckAgent(AbstractDeckAgent):
     def thought_label(self) -> str:
         return "Agent thought"
 
-    async def _plan(
+    async def _plan_rag(
         self,
         request: DeckRequest,
-        card_context: list[RetrievedDocument],
         rules_context: list[RetrievedDocument],
         strategy_context: list[RetrievedDocument],
     ) -> dict[str, Any]:
         payload = {
             "model": self.settings.ollama_model,
             "stream": False,
-            "format": AGENT_PLAN_SCHEMA,
+            "format": AGENT_RAG_PLAN_SCHEMA,
             "messages": [
                 {
                     "role": "system",
                     "content": (
                         "You are a constrained Magic: The Gathering deck-building agent. "
-                        "Plan only the extra tool calls needed before deck construction. "
-                        "Use strategy and meta-deck searches to learn archetype structure. "
-                        "Use live Scryfall searches for all card discovery. Keep Scryfall queries "
-                        "broad enough to return candidate packages, e.g. format/color/type plus 1-2 "
-                        "oracle or archetype terms. When meta-deck context identifies staple names, "
-                        "plan Scryfall searches that can retrieve those exact cards or closely related packages."
+                        "First, plan only the extra RAG tool calls needed before deck construction. "
+                        "Use strategy, meta-deck, and rules searches to gather context for the deck. "
+                        "Do not plan any live Scryfall card searches yet."
                     ),
                 },
                 {
@@ -188,10 +227,6 @@ class OllamaDeckAgent(AbstractDeckAgent):
                                 "search_strategy(query, format, limit)",
                                 "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
-                                "search_cards_scryfall(query, limit)",
-                            ],
-                            "initial_live_cards": [
-                                _document_to_model_context(document) for document in card_context[:24]
                             ],
                             "retrieved_rules_context": [
                                 _document_to_model_context(document) for document in rules_context[:8]
@@ -212,12 +247,65 @@ class OllamaDeckAgent(AbstractDeckAgent):
             "Ollama agent planning completed",
             extra=log_extra(
                 model=self.settings.ollama_model,
+                strategy_query_count=len(plan.get("strategy_queries", [])),
+            ),
+        )
+        return plan
+
+    async def _plan_scryfall(
+        self,
+        request: DeckRequest,
+        rag_context: dict[str, list[RetrievedDocument]],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.settings.ollama_model,
+            "stream": False,
+            "format": AGENT_SCRYFALL_PLAN_SCHEMA,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a constrained Magic: The Gathering deck-building agent. "
+                        "You already have retrieved strategy, meta-deck, and rules context. "
+                        "Now plan only live Scryfall searches to find cards that match the retrieved "
+                        "documents. Use the documents at hand to name relevant archetype pieces, "
+                        "staples, mana bases, and support cards."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request.model_dump(mode="json"),
+                            "available_tools": ["search_cards_scryfall(query, limit)"],
+                            "retrieved_strategy_context": [
+                                _document_to_model_context(document) for document in rag_context["strategy"][:12]
+                            ],
+                            "retrieved_meta_deck_context": [
+                                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                            ],
+                            "retrieved_rules_context": [
+                                _document_to_model_context(document) for document in rag_context["rules"][:8]
+                            ],
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+        }
+        logger.info("Ollama live Scryfall planning started", extra=log_extra(model=self.settings.ollama_model))
+        response = await self._post_chat(payload)
+        plan = _loads_json_content(response)
+        logger.info(
+            "Ollama live Scryfall planning completed",
+            extra=log_extra(
+                model=self.settings.ollama_model,
                 scryfall_query_count=len(plan.get("scryfall_queries", [])),
             ),
         )
         return plan
 
-    async def _run_tool_plan(
+    async def _run_rag_tool_plan(
         self,
         request: DeckRequest,
         plan: dict[str, Any],
@@ -260,6 +348,24 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "detail": f"{query} -> {len(documents)} documents",
                 }
             )
+
+        return results
+
+    async def _run_scryfall_tool_plan(
+        self,
+        request: DeckRequest,
+        plan: dict[str, Any],
+        rag_context: dict[str, list[RetrievedDocument]],
+        steps: list[dict[str, str]],
+        rag_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {
+            "strategy": rag_results["strategy"],
+            "meta_decks": rag_results["meta_decks"],
+            "rules": rag_results["rules"],
+            "cards": [],
+            "lookups": [],
+        }
 
         for query in _string_list(plan.get("scryfall_queries"))[:6]:
             try:
@@ -488,6 +594,80 @@ def _land_price_filter(request: DeckRequest) -> str:
     return "usd<5"
 
 
+def _aggregate_rag_context(
+    strategy_context: list[RetrievedDocument],
+    rules_context: list[RetrievedDocument],
+    rag_results: dict[str, Any],
+) -> dict[str, list[RetrievedDocument]]:
+    strategy = _dedupe_retrieved_documents(
+        [
+            *strategy_context,
+            *[
+                document
+                for payload in rag_results.get("strategy", [])
+                if (document := _payload_to_retrieved_document(payload)) is not None
+            ],
+        ]
+    )
+    meta_decks = _dedupe_retrieved_documents(
+        [
+            *[
+                document
+                for payload in rag_results.get("meta_decks", [])
+                if (document := _payload_to_retrieved_document(payload)) is not None
+            ]
+        ]
+    )
+    rules = _dedupe_retrieved_documents(
+        [
+            *rules_context,
+            *[
+                document
+                for payload in rag_results.get("rules", [])
+                if (document := _payload_to_retrieved_document(payload)) is not None
+            ],
+        ]
+    )
+    return {
+        "strategy": strategy,
+        "meta_decks": meta_decks,
+        "rules": rules,
+    }
+
+
+def _dedupe_retrieved_documents(documents: list[RetrievedDocument]) -> list[RetrievedDocument]:
+    deduped: list[RetrievedDocument] = []
+    seen: set[tuple[str, str, str]] = set()
+    for document in documents:
+        key = (document.source, document.title, document.content[:80])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(document)
+    return deduped
+
+
+def _payload_to_retrieved_document(payload: Any) -> RetrievedDocument | None:
+    if not isinstance(payload, dict):
+        return None
+    title = payload.get("title")
+    content = payload.get("content")
+    source = payload.get("source")
+    metadata = payload.get("metadata")
+    if not isinstance(title, str) or not isinstance(content, str) or not isinstance(source, str):
+        return None
+    if not isinstance(metadata, dict):
+        metadata = {}
+    score = payload.get("score")
+    return RetrievedDocument(
+        title=title,
+        content=content,
+        source=source,
+        metadata=metadata,
+        score=float(score) if isinstance(score, (int, float)) else None,
+    )
+
+
 def _candidate_payloads(
     card_context: list[RetrievedDocument],
     tool_results: dict[str, Any],
@@ -534,10 +714,9 @@ class OpenAIDeckAgent(AbstractDeckAgent):
     def thought_label(self) -> str:
         return "OpenAI thought"
 
-    async def _plan(
+    async def _plan_rag(
         self,
         request: DeckRequest,
-        card_context: list[RetrievedDocument],
         rules_context: list[RetrievedDocument],
         strategy_context: list[RetrievedDocument],
     ) -> dict[str, Any]:
@@ -548,13 +727,9 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                     "role": "system",
                     "content": (
                         "You are a constrained Magic: The Gathering deck-building agent. "
-                        "You already have initial RAG strategy and rules context. Plan extra RAG "
-                        "tool calls for strategy, meta decks, rules, and guarded live Scryfall search. "
-                        "Use meta-deck searches to recover archetype staples and role balance. Use live "
-                        "Scryfall for all card discovery; queries must include format and color identity "
-                        "constraints and should be broad enough to return many legal candidates. When "
-                        "meta-deck context identifies staple names, plan Scryfall searches that can retrieve "
-                        "those exact cards or closely related packages."
+                        "First, plan only the extra RAG tool calls needed before deck construction. "
+                        "Use strategy, meta-deck, and rules searches to gather context for the deck. "
+                        "Do not plan any live Scryfall card searches yet."
                     ),
                 },
                 {
@@ -566,9 +741,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                                 "search_strategy(query, format, limit)",
                                 "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
-                                "search_cards_scryfall(query, limit)",
                             ],
-                            "initial_live_cards": [],
                             "retrieved_rules_context": [
                                 _document_to_model_context(document) for document in rules_context[:8]
                             ],
@@ -580,13 +753,65 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                     ),
                 },
             ],
-            "text": _json_schema_format("mtg_agent_plan", AGENT_PLAN_SCHEMA),
+            "text": _json_schema_format("mtg_agent_rag_plan", AGENT_RAG_PLAN_SCHEMA),
         }
-        logger.info("OpenAI agent planning started", extra=log_extra(model=self.settings.openai_model))
+        logger.info("OpenAI RAG planning started", extra=log_extra(model=self.settings.openai_model))
         response = await self._post_response(payload)
         plan = _extract_json_response(response)
         logger.info(
-            "OpenAI agent planning completed",
+            "OpenAI RAG planning completed",
+            extra=log_extra(
+                model=self.settings.openai_model,
+                strategy_query_count=len(plan.get("strategy_queries", [])),
+            ),
+        )
+        return plan
+
+    async def _plan_scryfall(
+        self,
+        request: DeckRequest,
+        rag_context: dict[str, list[RetrievedDocument]],
+    ) -> dict[str, Any]:
+        payload = {
+            "model": self.settings.openai_model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a constrained Magic: The Gathering deck-building agent. "
+                        "You already have retrieved strategy, meta-deck, and rules context. "
+                        "Now plan only live Scryfall searches to find cards that match the retrieved "
+                        "documents. Use the documents at hand to name relevant archetype pieces, "
+                        "staples, mana bases, and support cards."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request.model_dump(mode="json"),
+                            "available_tools": ["search_cards_scryfall(query, limit)"],
+                            "retrieved_strategy_context": [
+                                _document_to_model_context(document) for document in rag_context["strategy"][:12]
+                            ],
+                            "retrieved_meta_deck_context": [
+                                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                            ],
+                            "retrieved_rules_context": [
+                                _document_to_model_context(document) for document in rag_context["rules"][:8]
+                            ],
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "text": _json_schema_format("mtg_agent_scryfall_plan", AGENT_SCRYFALL_PLAN_SCHEMA),
+        }
+        logger.info("OpenAI live Scryfall planning started", extra=log_extra(model=self.settings.openai_model))
+        response = await self._post_response(payload)
+        plan = _extract_json_response(response)
+        logger.info(
+            "OpenAI live Scryfall planning completed",
             extra=log_extra(
                 model=self.settings.openai_model,
                 scryfall_query_count=len(plan.get("scryfall_queries", [])),
@@ -594,8 +819,13 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         )
         return plan
 
-    async def _run_tool_plan(self, request: DeckRequest, plan: dict[str, Any], steps: list[dict[str, str]]) -> dict[str, Any]:
-        results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": [], "cards": [], "lookups": []}
+    async def _run_rag_tool_plan(
+        self,
+        request: DeckRequest,
+        plan: dict[str, Any],
+        steps: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": []}
 
         for query in _string_list(plan.get("strategy_queries"))[:4]:
             documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=8)
@@ -611,6 +841,24 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             documents = self.tools.search_rules(intent=query, limit=6)
             results["rules"].extend(documents)
             steps.append({"label": "RAG rules search", "detail": f"{query} -> {len(documents)} documents"})
+
+        return results
+
+    async def _run_scryfall_tool_plan(
+        self,
+        request: DeckRequest,
+        plan: dict[str, Any],
+        rag_context: dict[str, list[RetrievedDocument]],
+        steps: list[dict[str, str]],
+        rag_results: dict[str, Any],
+    ) -> dict[str, Any]:
+        results: dict[str, Any] = {
+            "strategy": rag_results["strategy"],
+            "meta_decks": rag_results["meta_decks"],
+            "rules": rag_results["rules"],
+            "cards": [],
+            "lookups": [],
+        }
 
         for query in _string_list(plan.get("scryfall_queries"))[:8]:
             try:

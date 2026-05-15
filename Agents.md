@@ -66,7 +66,6 @@ If old card corpus rows were embedded before field formatting changed, delete or
 
 - Rules retrieval is better than before but still needs explicit rule-intent mapping.
 - The Scryfall card corpus remains ingestible, but the OpenAI/Ollama agent paths now use live Scryfall for card discovery.
-- Meta deck snapshots are now retrievable, but `mtgdecks-meta-decks` appears to contain placeholder or incomplete card lists; the actual top deck cards need to be captured and ingested.
 - Candidate scoring is still heuristic and should be refined against real generated deck outputs.
 - The deterministic fallback remains heuristic and should become a real scoring and construction pipeline.
 - The project has deterministic Python "skills", but not model-native/Codex-style skill packages for the deck builder.
@@ -75,8 +74,7 @@ If old card corpus rows were embedded before field formatting changed, delete or
 
 ## Recommended Next Work
 
-1. Fix `mtgdecks-meta-decks` ingestion so meta deck snapshots include the actual top deck card lists, not placeholders; then re-ingest and verify those cards appear in retrieved context.
-2. Convert Scryfall API requests into an actual MCP server/tool integration instead of the current direct `ScryfallClient` adapter.
-3. Define clearer agent tool schemas for strategy search, meta deck search, rules search, live Scryfall search, lookup, and validation.
-4. Improve rules retrieval by mapping request formats to explicit rule intents.
-5. Refine deterministic construction so the evaluator can enforce role counts rather than only ranking candidates.
+1. Convert Scryfall API requests into an actual MCP server/tool integration instead of the current direct `ScryfallClient` adapter.
+2. Define clearer agent tool schemas for strategy search, meta deck search, rules search, live Scryfall search, lookup, and validation.
+3. Improve rules retrieval by mapping request formats to explicit rule intents.
+4. Refine deterministic construction so the evaluator can enforce role counts rather than only ranking candidates.

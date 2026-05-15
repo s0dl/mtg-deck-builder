@@ -4,7 +4,7 @@ This directory contains model-backed deck-building agents and the constrained to
 
 ## Current State
 
-- `OpenAIDeckAgent` receives initial strategy/rules RAG context, plans extra strategy/rules calls, then selects cards from live Scryfall results.
+- `OpenAIDeckAgent` first plans RAG calls for strategy/meta/rules context, then plans live Scryfall searches from that retrieved context, then selects cards from those live results.
 - `OllamaDeckAgent` remains available for local experimentation.
 - `DeckAgentTools.search_strategy()` queries strategy/meta RAG documents.
 - `DeckAgentTools.search_meta_decks()` queries MTGDecks archetype/top-deck snapshots directly.
