@@ -71,7 +71,6 @@ If old card corpus rows were embedded before field formatting changed, delete or
 - The Scryfall card corpus remains ingestible, but the OpenAI/Ollama agent paths now use live Scryfall for card discovery.
 - Candidate scoring is still heuristic and should be refined against real generated deck outputs.
 - The deterministic fallback remains heuristic and should become a real scoring and construction pipeline.
-- The project has deterministic Python "skills", but not model-native/Codex-style skill packages for the deck builder.
 - The MCP server is currently request-scoped and in-process; expose a stdio/HTTP transport if external clients need to call it directly.
 
 ## Recommended Next Work

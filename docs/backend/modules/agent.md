@@ -13,13 +13,21 @@ The agent module coordinates model-controlled deck construction without giving t
 
 ## OpenAI Agent Flow
 
-1. Receive the user request plus initial RAG strategy/rules context through an OpenAI Agents SDK agent with Pydantic structured output.
-2. Ask the model for extra RAG strategy/meta/rules queries.
-3. Execute those RAG tools through the MCP server and collect the returned documents.
-4. Ask the model for live Scryfall searches using the retrieved documents.
-5. Execute the live Scryfall searches through the MCP server.
-6. Send tool results back for card selection.
-7. Return selected cards, explanation, live card payloads, and agent steps.
+1. Load the `deck_builder_workflow` skill so every model phase sees the same ordered tool contract.
+2. Receive the user request plus initial RAG strategy/rules context through an OpenAI Agents SDK agent with Pydantic structured output.
+3. Ask the model for extra RAG strategy/meta/rules queries.
+4. Execute those RAG tools through the MCP server and collect the returned documents.
+5. Ask the model for live Scryfall searches using the retrieved documents.
+6. Execute the live Scryfall searches through the MCP server.
+7. Send tool results back for card selection.
+8. Return selected cards, explanation, live card payloads, and agent steps.
+
+The workflow skill constrains each phase to the right tool category:
+
+- RAG planning: `search_strategy`, `search_meta_decks`, `search_rules`.
+- Live card planning: `search_cards_scryfall`.
+- Card selection: no tool calls; exact candidate names only.
+- Validation/finalization: backend-owned `validate_deck_cards` and `lookup_card`.
 
 The OpenAI agent intentionally receives rules and strategy context first. It then uses the retrieved RAG documents to drive guarded live Scryfall searches for candidate cards. Live Scryfall is also called by the backend after deterministic validation to refresh prices and card facts, through the same MCP server boundary.
 

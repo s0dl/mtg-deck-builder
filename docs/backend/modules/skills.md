@@ -12,10 +12,24 @@ Deterministic helper functions for constraints and scoring signals that should n
 - `mana_curve.py` - mana curve aggregation.
 - `filters.py` - budget, color, and type filtering helpers.
 - `synergy.py` - tag-based synergy helpers.
+- `deck_evaluation.py` - candidate legality, color identity, curve, role, budget, and synergy scoring.
+- `deck_workflow.py` - ordered workflow contract used by agent prompts and payloads.
+
+## Workflow Skill
+
+`deck_workflow.py` defines the deck-building sequence the agent must follow:
+
+1. Read request constraints.
+2. Retrieve strategy, meta deck, and rules context through RAG MCP tools.
+3. Discover current cards through live Scryfall MCP tools.
+4. Select exact candidate names with counts and roles.
+5. Let deterministic backend skills validate, finalize, and refresh prices.
+
+Each agent phase receives the workflow payload plus phase-specific allowed tools. This keeps the model from planning live card searches before RAG retrieval or selecting cards before live candidates exist.
 
 ## Direction
 
-The next major improvement should be a deck evaluation/building skill that scores candidates against:
+The next major improvement should refine the deck evaluation/building skill so it can enforce:
 
 - Format legality.
 - Color identity.

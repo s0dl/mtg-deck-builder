@@ -16,6 +16,7 @@ from app.llm.deck_builder import _document_to_model_context
 from app.models.deck import DeckRequest
 from app.rag.retriever import RetrievedDocument
 from app.skills.deck_evaluation import rank_candidate_cards
+from app.skills.deck_workflow import workflow_instructions, workflow_payload
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,13 @@ class AbstractDeckAgent(ABC):
         land_guidance: dict[str, int],
     ) -> dict[str, Any]:
         steps: list[dict[str, str]] = [
+            {
+                "label": "Workflow skill loaded",
+                "detail": (
+                    "Using deck_builder_workflow: request constraints -> RAG tools -> live Scryfall "
+                    "tools -> candidate selection -> deterministic validation."
+                ),
+            },
             {
                 "label": "GPT received initial RAG context",
                 "detail": (
@@ -238,7 +246,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "role": "system",
                     "content": (
-                        "You are a constrained Magic: The Gathering deck-building agent. "
+                        workflow_instructions("rag_planning")
+                        + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
                         "First, plan only the extra RAG tool calls needed before deck construction. "
                         "Use strategy, meta-deck, and rules searches to gather context for the deck. "
                         "Do not plan any live Scryfall card searches yet."
@@ -249,6 +258,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "deck_workflow": workflow_payload("rag_planning"),
                             "available_tools": self.tools.tool_signatures(
                                 ("search_strategy", "search_meta_decks", "search_rules")
                             ),
@@ -289,7 +299,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "role": "system",
                     "content": (
-                        "You are a constrained Magic: The Gathering deck-building agent. "
+                        workflow_instructions("scryfall_planning")
+                        + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
                         "You already have retrieved strategy, meta-deck, and rules context. "
                         "Now plan only live Scryfall searches to find cards that match the retrieved "
                         "documents. Use the documents at hand to name relevant archetype pieces, "
@@ -301,6 +312,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "deck_workflow": workflow_payload("scryfall_planning"),
                             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
                             "retrieved_strategy_context": [
                                 _document_to_model_context(document) for document in rag_context["strategy"][:12]
@@ -440,7 +452,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "role": "system",
                     "content": (
-                        "You are a Magic: The Gathering deck-building agent. Select a focused package "
+                        workflow_instructions("card_selection")
+                        + "\n\nYou are a Magic: The Gathering deck-building agent. Select a focused package "
                         "of cards from the provided candidates, including an appropriate mana base "
                         "when land candidates are available. The backend will apply copy counts and "
                         "validation. Use exact candidate names only. Return JSON. Respect deck size "
@@ -459,6 +472,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "deck_workflow": workflow_payload("card_selection"),
                             "budget_guidance": _budget_guidance(request),
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
@@ -745,13 +759,15 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         strategy_context: list[RetrievedDocument],
     ) -> dict[str, Any]:
         instructions = (
-            "You are a constrained Magic: The Gathering deck-building agent. "
+            workflow_instructions("rag_planning")
+            + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
             "First, plan only the extra RAG tool calls needed before deck construction. "
             "Use strategy, meta-deck, and rules searches to gather context for the deck. "
             "Do not plan any live Scryfall card searches yet."
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "deck_workflow": workflow_payload("rag_planning"),
             "available_tools": self.tools.tool_signatures(
                 ("search_strategy", "search_meta_decks", "search_rules")
             ),
@@ -785,7 +801,8 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         rag_context: dict[str, list[RetrievedDocument]],
     ) -> dict[str, Any]:
         instructions = (
-            "You are a constrained Magic: The Gathering deck-building agent. "
+            workflow_instructions("scryfall_planning")
+            + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
             "You already have retrieved strategy, meta-deck, and rules context. "
             "Now plan only live Scryfall searches to find cards that match the retrieved "
             "documents. Use the documents at hand to name relevant archetype pieces, "
@@ -793,6 +810,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "deck_workflow": workflow_payload("scryfall_planning"),
             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
             "retrieved_strategy_context": [
                 _document_to_model_context(document) for document in rag_context["strategy"][:12]
@@ -893,7 +911,8 @@ class OpenAIDeckAgent(AbstractDeckAgent):
     ) -> dict[str, Any]:
         candidates = _candidate_payloads(card_context, tool_results, request=request, limit=80)
         instructions = (
-            "You are a Magic: The Gathering deck-building agent. Select a coherent "
+            workflow_instructions("card_selection")
+            + "\n\nYou are a Magic: The Gathering deck-building agent. Select a coherent "
             "package of cards from exact candidate names, including useful nonbasic lands "
             "when land candidates are available. The backend will apply copy counts, fill "
             "missing basic lands, and validate the final list. Use retrieved context for "
@@ -909,6 +928,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "deck_workflow": workflow_payload("card_selection"),
             "budget_guidance": _budget_guidance(request),
             "land_guidance": land_guidance,
             "candidate_cards": candidates,

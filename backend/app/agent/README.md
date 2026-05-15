@@ -9,6 +9,7 @@ This directory contains model-backed deck-building agents and the constrained to
 - `DeckAgentTools` is a client facade over `DeckBuilderMcpServer`.
 - Strategy, meta-deck, rules, card corpus, live Scryfall, lookup, and validation tools are registered in `app/mcp/server.py`.
 - Agent prompts receive tool signatures from the MCP server registry.
+- Agent prompts and payloads receive the `deck_builder_workflow` skill from `app/skills/deck_workflow.py`.
 
 The backend executes tools and final validation. The model chooses what to ask for, but it does not get arbitrary code execution.
 Live Scryfall is used for agent card discovery and after validation to refresh prices and card facts.

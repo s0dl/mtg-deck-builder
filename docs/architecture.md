@@ -28,7 +28,10 @@ The backend assembles request context, creates a request-scoped MCP tool server,
 
 The preferred generation path is the OpenAI Agents SDK-backed agent in `backend/app/agent`.
 
-RAG supplies rules and strategy context first. The model then decides which constrained tools to call:
+The agent receives the `deck_builder_workflow` skill from `backend/app/skills/deck_workflow.py`.
+That workflow defines the ordered contract for request analysis, RAG retrieval, live Scryfall
+search, card selection, and deterministic validation. RAG supplies rules and strategy context
+first. The model then decides which constrained tools to call for the current phase:
 
 - `search_strategy`
 - `search_meta_decks`
@@ -67,6 +70,7 @@ The current OpenAI agent flow treats RAG as rules, strategy, meta, and semantic 
 
 The skill layer handles objective checks and summary calculations:
 
+- Agent workflow phase ordering.
 - Deck size and copy limits.
 - Commander singleton behavior.
 - Mana curve.
