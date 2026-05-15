@@ -14,9 +14,9 @@ Despite the directory name, this is not currently a protocol-native MCP server. 
 
 ## Responsibilities
 
-- Query live Scryfall search when fallback flows need live candidates.
+- Query live Scryfall search when agent or fallback flows need live candidates.
 - Look up specific card names after validation for price and fact refresh.
 - Convert Scryfall card JSON into retrieved-document objects.
 - Preserve legality, colors, color identity, mana value, type line, oracle text, and price metadata when available.
 
-The OpenAI agent can use RAG card corpus records and guarded live Scryfall searches for candidate discovery. The backend also uses live Scryfall after validation for current prices and card facts.
+The OpenAI agent uses guarded live Scryfall searches for candidate discovery. The backend also uses live Scryfall after validation for current prices and card facts.

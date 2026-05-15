@@ -19,7 +19,7 @@ The API module exposes HTTP routes and coordinates request-scoped work.
 - Retrieve strategy, rule, and meta context.
 - Run OpenAI or Ollama agent flows when configured.
 - Fall back to deterministic assembly when model paths fail.
-- Convert agent card-corpus payloads into card context.
+- Convert agent live Scryfall payloads into card context.
 - Merge duplicate card rows.
 - Enforce target deck size.
 - Add basic lands.

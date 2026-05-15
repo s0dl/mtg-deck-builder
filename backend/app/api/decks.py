@@ -1114,7 +1114,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     format=request.format,
                     cards=model_cards,
                     explanation=agent_result.get("explanation")
-                    or "Selected by the OpenAI agent using RAG strategy, rules, and card corpus tools.",
+                    or "Selected by the OpenAI agent using RAG strategy, rules, and live Scryfall tools.",
                     mana_curve=mana_curve,
                     validation=validation,
                     retrieved_context=[f"{item.title} ({item.source})" for item in response_context],
@@ -1213,7 +1213,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     format=request.format,
                     cards=model_cards,
                     explanation=agent_result.get("explanation")
-                    or "Selected by the local Ollama agent using RAG strategy, rules, and card corpus tools.",
+                    or "Selected by the local Ollama agent using RAG strategy, rules, and live Scryfall tools.",
                     mana_curve=mana_curve,
                     validation=validation,
                     retrieved_context=[f"{item.title} ({item.source})" for item in response_context],

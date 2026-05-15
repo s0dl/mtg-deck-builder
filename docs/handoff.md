@@ -12,8 +12,8 @@ The app now has a working agent-oriented deck generation path:
 - Ollama remains available for local experimentation, but may be too weak for reliable structured deck construction.
 - The frontend shows agent activity, context, validation, pricing, and selectable themes.
 - Candidate pools now pass through a deterministic deck evaluation skill that scores legality, color identity, curve fit, role fit, budget, and request-term synergy before model/fallback construction.
-- Agent strategy retrieval now includes MTGDecks meta deck snapshots, and card corpus retrieval combines vector and lexical search before ranking.
-- Live Scryfall search is available to the model as a guarded backend-executed tool for candidate discovery when corpus retrieval is thin.
+- Agent strategy retrieval now includes MTGDecks meta deck snapshots.
+- Live Scryfall search is the model's guarded backend-executed card discovery path.
 
 ## Current Preferred Setup
 
@@ -65,7 +65,7 @@ If old card corpus rows were embedded before field formatting changed, delete or
 ## Known Gaps
 
 - Rules retrieval is better than before but still needs explicit rule-intent mapping.
-- Card-corpus RAG query quality now matters more because the OpenAI agent uses it for candidate discovery before Scryfall price checks.
+- The Scryfall card corpus remains ingestible, but the OpenAI/Ollama agent paths now use live Scryfall for card discovery.
 - Meta deck snapshots are now retrievable, but `mtgdecks-meta-decks` appears to contain placeholder or incomplete card lists; the actual top deck cards need to be captured and ingested.
 - Candidate scoring is still heuristic and should be refined against real generated deck outputs.
 - The deterministic fallback remains heuristic and should become a real scoring and construction pipeline.
@@ -77,6 +77,6 @@ If old card corpus rows were embedded before field formatting changed, delete or
 
 1. Fix `mtgdecks-meta-decks` ingestion so meta deck snapshots include the actual top deck card lists, not placeholders; then re-ingest and verify those cards appear in retrieved context.
 2. Convert Scryfall API requests into an actual MCP server/tool integration instead of the current direct `ScryfallClient` adapter.
-3. Define clearer agent tool schemas for strategy search, meta deck search, rules search, card corpus search, live Scryfall search, lookup, and validation.
+3. Define clearer agent tool schemas for strategy search, meta deck search, rules search, live Scryfall search, lookup, and validation.
 4. Improve rules retrieval by mapping request formats to explicit rule intents.
 5. Refine deterministic construction so the evaluator can enforce role counts rather than only ranking candidates.

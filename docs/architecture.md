@@ -32,10 +32,10 @@ RAG supplies rules and strategy context first. The model then decides which cons
 
 - `search_strategy`
 - `search_rules`
-- `search_card_corpus`
+- `search_cards_scryfall`
 - `validate_deck_cards`
 
-Tool calls are executed by the backend, not by arbitrary model-side code. Card-corpus RAG payloads become candidate card context. Live Scryfall is called after deterministic validation to refresh prices and card facts.
+Tool calls are executed by the backend, not by arbitrary model-side code. Live Scryfall payloads become candidate card context and are reused after deterministic validation to refresh prices and card facts.
 
 Ollama remains available as an optional local experiment, but smaller local models may fail to produce stable structured deck output.
 
@@ -67,9 +67,9 @@ The backend also finalizes model-selected cards by merging duplicates, trimming 
 1. The frontend submits a `DeckRequest`.
 2. FastAPI creates a request-scoped database session.
 3. The backend retrieves strategy, rules, and meta context from RAG.
-4. If the OpenAI agent is enabled, the model receives that context and plans extra RAG calls for strategy, rules, and card-corpus documents.
-5. The backend executes those constrained RAG tool calls.
-6. The model selects cards from the returned card-corpus context.
+4. If the OpenAI agent is enabled, the model receives that context and plans extra RAG calls for strategy/rules plus live Scryfall card searches.
+5. The backend executes those constrained tool calls.
+6. The model selects cards from the returned live Scryfall context.
 7. The backend merges, trims, sizes, and validates the deck.
 8. The backend calls Scryfall to refresh prices after validation.
 9. If the agent path fails, the backend falls back to deterministic construction.

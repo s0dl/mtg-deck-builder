@@ -20,13 +20,12 @@ logger = logging.getLogger(__name__)
 AGENT_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["thoughts", "strategy_queries", "meta_deck_queries", "rules_queries", "card_queries", "scryfall_queries"],
+    "required": ["thoughts", "strategy_queries", "meta_deck_queries", "rules_queries", "scryfall_queries"],
     "properties": {
         "thoughts": {"type": "array", "items": {"type": "string"}},
         "strategy_queries": {"type": "array", "items": {"type": "string"}},
         "meta_deck_queries": {"type": "array", "items": {"type": "string"}},
         "rules_queries": {"type": "array", "items": {"type": "string"}},
-        "card_queries": {"type": "array", "items": {"type": "string"}},
         "scryfall_queries": {"type": "array", "items": {"type": "string"}},
     },
 }
@@ -75,7 +74,7 @@ class AbstractDeckAgent(ABC):
                 "label": "GPT received initial RAG context",
                 "detail": (
                     f"Loaded {len(strategy_context)} strategy documents, "
-                    f"{len(rules_context)} rules documents, and {len(card_context)} candidate cards."
+                    f"{len(rules_context)} rules documents, and {len(card_context)} initial live cards."
                 ),
             }
         ]
@@ -86,7 +85,7 @@ class AbstractDeckAgent(ABC):
                 "detail": (
                     f"Planned {len(_string_list(plan.get('strategy_queries')))} strategy, "
                     f"{len(_string_list(plan.get('rules_queries')))} rules, and "
-                    f"{len(_string_list(plan.get('card_queries')))} card corpus RAG searches."
+                    f"{len(_string_list(plan.get('scryfall_queries')))} live Scryfall searches."
                 ),
             }
         )
@@ -103,7 +102,10 @@ class AbstractDeckAgent(ABC):
             land_guidance=land_guidance,
         )
         steps.append(
-            {"label": "GPT card selection", "detail": f"Selected {len(result.get('selected_cards', []))} card names from RAG card context."}
+            {
+                "label": "GPT card selection",
+                "detail": f"Selected {len(result.get('selected_cards', []))} card names from live Scryfall candidates.",
+            }
         )
         result["agent_steps"] = steps
         result["tool_card_names"] = _tool_card_names(tool_results)
@@ -171,10 +173,10 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         "You are a constrained Magic: The Gathering deck-building agent. "
                         "Plan only the extra tool calls needed before deck construction. "
                         "Use strategy and meta-deck searches to learn archetype structure. "
-                        "Use broad card corpus searches for candidate packages, not one-card lookups. "
-                        "Use live Scryfall searches when corpus retrieval is likely too narrow or when "
-                        "you need current format-legal candidates. Keep Scryfall queries broad enough "
-                        "to return many cards, e.g. format/color/type plus 1-2 oracle terms."
+                        "Use live Scryfall searches for all card discovery. Keep Scryfall queries "
+                        "broad enough to return candidate packages, e.g. format/color/type plus 1-2 "
+                        "oracle or archetype terms. When meta-deck context identifies staple names, "
+                        "plan Scryfall searches that can retrieve those exact cards or closely related packages."
                     ),
                 },
                 {
@@ -186,10 +188,9 @@ class OllamaDeckAgent(AbstractDeckAgent):
                                 "search_strategy(query, format, limit)",
                                 "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
-                                "search_card_corpus(query, format, limit)",
                                 "search_cards_scryfall(query, limit)",
                             ],
-                            "initial_candidate_cards": [
+                            "initial_live_cards": [
                                 _document_to_model_context(document) for document in card_context[:24]
                             ],
                             "retrieved_rules_context": [
@@ -211,7 +212,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
             "Ollama agent planning completed",
             extra=log_extra(
                 model=self.settings.ollama_model,
-                card_query_count=len(plan.get("card_queries", [])),
+                scryfall_query_count=len(plan.get("scryfall_queries", [])),
             ),
         )
         return plan
@@ -226,7 +227,6 @@ class OllamaDeckAgent(AbstractDeckAgent):
             "strategy": [],
             "meta_decks": [],
             "rules": [],
-            "card_corpus": [],
             "cards": [],
             "lookups": [],
         }
@@ -261,17 +261,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 }
             )
 
-        for query in _string_list(plan.get("card_queries"))[:5]:
-            documents = self.tools.search_card_corpus(query=query, mtg_format=request.format, limit=24, request=request)
-            results["card_corpus"].extend(documents)
-            steps.append(
-                {
-                    "label": "RAG card corpus search",
-                    "detail": f"{query} -> {len(documents)} card documents",
-                }
-            )
-
-        for query in _string_list(plan.get("scryfall_queries"))[:3]:
+        for query in _string_list(plan.get("scryfall_queries"))[:6]:
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=20)
             except httpx.HTTPError as exc:
@@ -282,6 +272,20 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 {
                     "label": "Live Scryfall search",
                     "detail": f"{query} -> {len(documents)} live cards",
+                }
+            )
+
+        for query in _land_scryfall_queries(request):
+            try:
+                documents = await self.tools.search_cards_scryfall(query=query, limit=16)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Live Scryfall land search failed", "detail": f"{query} -> {exc}"})
+                continue
+            results["cards"].extend(documents)
+            steps.append(
+                {
+                    "label": "Live Scryfall land search",
+                    "detail": f"{query} -> {len(documents)} live lands",
                 }
             )
 
@@ -392,28 +396,25 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _land_corpus_queries(request: DeckRequest) -> list[str]:
-    color_names = {
-        "W": "white",
-        "U": "blue",
-        "B": "black",
-        "R": "red",
-        "G": "green",
-    }
-    colors = [color.upper() for color in request.colors if color.upper() in color_names]
-    color_text = " ".join([*colors, *(color_names[color] for color in colors)])
-    budget_text = _land_budget_terms(request)
-    format_text = request.format.value
+def _land_scryfall_queries(request: DeckRequest) -> list[str]:
+    colors = [color.upper() for color in request.colors if color.upper() in {"W", "U", "B", "R", "G"}]
+    price_filter = _land_price_filter(request)
+    format_text = f"f:{request.format.value}" if request.format.value != "casual" else ""
+    color_identity = "".join(color.lower() for color in "WUBRG" if color in colors)
+    color_text = f"id<={color_identity}" if color_identity else ""
     queries = [
-        f"{format_text} land {color_text} color identity mana fixing {budget_text}".strip(),
-        f"{format_text} dual land fetch shock pain fast slow check land {color_text} {budget_text}".strip(),
+        f"{format_text} {color_text} game:paper -is:digital t:land {price_filter}".strip(),
+        (
+            f"{format_text} {color_text} game:paper -is:digital t:land "
+            f"(t:mountain or t:island or t:swamp or t:forest or t:plains or o:add) {price_filter}"
+        ).strip(),
     ]
     return list(dict.fromkeys(query for query in queries if query))
 
 
 def _tool_card_names(tool_results: dict[str, Any]) -> list[str]:
     names: list[str] = []
-    for bucket in ("card_corpus", "cards", "lookups"):
+    for bucket in ("cards", "lookups"):
         for item in tool_results.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -427,7 +428,7 @@ def _tool_card_names(tool_results: dict[str, Any]) -> list[str]:
 def _tool_card_payloads(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for bucket in ("lookups", "card_corpus", "cards"):
+    for bucket in ("lookups", "cards"):
         for item in tool_results.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -479,14 +480,12 @@ def _budget_guidance(request: DeckRequest) -> str:
     )
 
 
-def _land_budget_terms(request: DeckRequest) -> str:
-    if request.budget_usd is None:
-        return "mana fixing"
-    if request.budget_usd >= 300:
-        return "premium mana fixing fetch shock surveil triome staple"
+def _land_price_filter(request: DeckRequest) -> str:
+    if request.budget_usd is None or request.budget_usd >= 300:
+        return ""
     if request.budget_usd >= 100:
-        return "strong mana fixing dual shock pain fast slow check"
-    return "cheap budget low price mana fixing"
+        return "usd<25"
+    return "usd<5"
 
 
 def _candidate_payloads(
@@ -522,7 +521,7 @@ def _candidate_payloads(
     for document in card_context:
         add_payload(_document_to_model_context(document))
 
-    for bucket in ("card_corpus", "lookups", "cards"):
+    for bucket in ("lookups", "cards"):
         for payload in tool_results.get(bucket, []):
             if isinstance(payload, dict):
                 add_payload(payload)
@@ -550,12 +549,12 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                     "content": (
                         "You are a constrained Magic: The Gathering deck-building agent. "
                         "You already have initial RAG strategy and rules context. Plan extra RAG "
-                        "tool calls for strategy, meta decks, rules, the embedded Scryfall card corpus, "
-                        "and guarded live Scryfall search. Use meta-deck searches to recover archetype "
-                        "staples and role balance. Use broad card corpus queries for packages of cards, "
-                        "not one-card lookups. Use live Scryfall when the corpus may be stale or too thin; "
-                        "queries must include format and color identity constraints and should be broad "
-                        "enough to return many legal candidates."
+                        "tool calls for strategy, meta decks, rules, and guarded live Scryfall search. "
+                        "Use meta-deck searches to recover archetype staples and role balance. Use live "
+                        "Scryfall for all card discovery; queries must include format and color identity "
+                        "constraints and should be broad enough to return many legal candidates. When "
+                        "meta-deck context identifies staple names, plan Scryfall searches that can retrieve "
+                        "those exact cards or closely related packages."
                     ),
                 },
                 {
@@ -567,10 +566,9 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                                 "search_strategy(query, format, limit)",
                                 "search_meta_decks(query, format, limit)",
                                 "search_rules(intent, limit)",
-                                "search_card_corpus(query, format, limit)",
                                 "search_cards_scryfall(query, limit)",
                             ],
-                            "initial_candidate_cards": [],
+                            "initial_live_cards": [],
                             "retrieved_rules_context": [
                                 _document_to_model_context(document) for document in rules_context[:8]
                             ],
@@ -591,13 +589,13 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "OpenAI agent planning completed",
             extra=log_extra(
                 model=self.settings.openai_model,
-                card_query_count=len(plan.get("card_queries", [])),
+                scryfall_query_count=len(plan.get("scryfall_queries", [])),
             ),
         )
         return plan
 
     async def _run_tool_plan(self, request: DeckRequest, plan: dict[str, Any], steps: list[dict[str, str]]) -> dict[str, Any]:
-        results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": [], "card_corpus": [], "cards": [], "lookups": []}
+        results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": [], "cards": [], "lookups": []}
 
         for query in _string_list(plan.get("strategy_queries"))[:4]:
             documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=8)
@@ -614,17 +612,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             results["rules"].extend(documents)
             steps.append({"label": "RAG rules search", "detail": f"{query} -> {len(documents)} documents"})
 
-        for query in _string_list(plan.get("card_queries"))[:6]:
-            documents = self.tools.search_card_corpus(query=query, mtg_format=request.format, limit=28, request=request)
-            results["card_corpus"].extend(documents)
-            steps.append({"label": "RAG card corpus search", "detail": f"{query} -> {len(documents)} card documents"})
-
-        for query in _land_corpus_queries(request):
-            documents = self.tools.search_card_corpus(query=query, mtg_format=request.format, limit=16, request=request)
-            results["card_corpus"].extend(documents)
-            steps.append({"label": "RAG land corpus search", "detail": f"{query} -> {len(documents)} land documents"})
-
-        for query in _string_list(plan.get("scryfall_queries"))[:4]:
+        for query in _string_list(plan.get("scryfall_queries"))[:8]:
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=24)
             except httpx.HTTPError as exc:
@@ -632,6 +620,15 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 continue
             results["cards"].extend(documents)
             steps.append({"label": "Live Scryfall search", "detail": f"{query} -> {len(documents)} live cards"})
+
+        for query in _land_scryfall_queries(request):
+            try:
+                documents = await self.tools.search_cards_scryfall(query=query, limit=20)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Live Scryfall land search failed", "detail": f"{query} -> {exc}"})
+                continue
+            results["cards"].extend(documents)
+            steps.append({"label": "Live Scryfall land search", "detail": f"{query} -> {len(documents)} live lands"})
 
         return results
 
@@ -689,7 +686,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                                 "lands that fit the colors and format. If budget_usd is high, use it "
                                 "for stronger staples and a better mana base instead of defaulting to "
                                 "the cheapest legal candidates. Explain the "
-                                "deck's plan using retrieved strategy/rules and card corpus data. Return "
+                                "deck's plan using retrieved strategy/rules and live Scryfall data. Return "
                                 "selected_cards with exact name, count, and role."
                             ),
                         },

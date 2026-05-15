@@ -56,6 +56,6 @@ npm run dev
 
 ## Current Generation Flow
 
-The preferred path is the OpenAI agent flow. RAG provides initial rules and strategy context, then the model plans extra RAG searches across strategy, rules, and the Scryfall card corpus. The backend validates and finalizes the deck, then calls Scryfall for current prices.
+The preferred path is the OpenAI agent flow. RAG provides initial rules and strategy context, then the model plans extra strategy/rules searches and live Scryfall searches for card candidates. The backend validates and finalizes the deck, then calls Scryfall for current prices.
 
 If model generation fails or is disabled, the backend falls back to deterministic assembly.

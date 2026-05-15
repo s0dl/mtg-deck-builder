@@ -14,19 +14,18 @@ The agent module coordinates model-controlled deck construction without giving t
 ## OpenAI Agent Flow
 
 1. Receive the user request plus initial RAG strategy/rules context.
-2. Ask the model for extra RAG strategy, rules, and card-corpus queries.
-3. Execute allowed backend RAG tools.
+2. Ask the model for extra RAG strategy/rules queries and live Scryfall card queries.
+3. Execute allowed backend tools.
 4. Send tool results back for card selection.
-5. Return selected cards, explanation, card-corpus payloads, and agent steps.
+5. Return selected cards, explanation, live card payloads, and agent steps.
 
-The OpenAI agent intentionally receives rules and strategy context first. It then searches the embedded Scryfall card corpus for candidate cards. Live Scryfall is called by the backend after deterministic validation to refresh prices and card facts.
+The OpenAI agent intentionally receives rules and strategy context first. It then uses guarded live Scryfall searches for candidate cards. Live Scryfall is also called by the backend after deterministic validation to refresh prices and card facts.
 
 ## Tools
 
 - `search_strategy(query, mtg_format, limit)` searches `mtgdecks_articles`.
 - `search_rules(intent, limit)` searches `mtg_comprehensive_rules`.
-- `search_card_corpus(query, mtg_format, limit)` searches `scryfall_bulk`.
-- `search_cards_scryfall(query, limit)` remains available for backend-controlled live checks.
+- `search_cards_scryfall(query, limit)` searches live Scryfall for candidate cards.
 - `lookup_card(name)` remains available for backend-controlled live checks.
 - `validate_deck_cards(cards, mtg_format)` runs deterministic validation.
 
