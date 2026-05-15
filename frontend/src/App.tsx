@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Wand2 } from "lucide-react";
+import { Moon, Sparkles, Sun, Wand2 } from "lucide-react";
 
 import { DeckResult } from "./components/DeckResult";
 import { DeckResponse, generateDeck } from "./lib/api";
@@ -7,6 +7,11 @@ import "./styles/app.css";
 
 const formats = ["standard", "pioneer", "modern", "legacy", "vintage", "commander", "pauper", "casual"];
 const colors = ["W", "U", "B", "R", "G"];
+const themes = [
+  { id: "verdant", label: "Verdant", icon: Sun },
+  { id: "arcane", label: "Arcane", icon: Sparkles },
+  { id: "nocturne", label: "Nocturne", icon: Moon }
+];
 
 function parseList(value: string): string[] {
   return value
@@ -23,6 +28,7 @@ export default function App() {
   const [strategy, setStrategy] = useState("Efficient threats, cheap interaction, and card selection.");
   const [mustInclude, setMustInclude] = useState("");
   const [avoid, setAvoid] = useState("");
+  const [theme, setTheme] = useState("verdant");
   const [deck, setDeck] = useState<DeckResponse | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -57,32 +63,54 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="builder">
-        <div className="intro">
-          <p className="eyebrow">MCP + RAG + deterministic skills</p>
-          <h1>MTG Deck Builder Agent</h1>
+    <main className="app-shell" data-theme={theme}>
+      <section className="builder" aria-label="Deck request">
+        <div className="intro-block">
+          <div className="intro">
+            <p className="eyebrow">MCP + RAG + Scryfall tools</p>
+            <h1>MTG Deck Builder Agent</h1>
+          </div>
+
+          <div className="theme-picker" aria-label="Theme">
+            {themes.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  aria-pressed={theme === item.id}
+                  className={theme === item.id ? "theme-button active" : "theme-button"}
+                  key={item.id}
+                  onClick={() => setTheme(item.id)}
+                  title={`${item.label} theme`}
+                  type="button"
+                >
+                  <Icon size={16} />
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <form className="deck-form" onSubmit={handleSubmit}>
-          <label>
-            Format
-            <select value={format} onChange={(event) => setFormat(event.target.value)}>
-              {formats.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </label>
+          <div className="form-grid">
+            <label>
+              Format
+              <select value={format} onChange={(event) => setFormat(event.target.value)}>
+                {formats.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </label>
 
-          <label>
-            Budget USD
-            <input
-              min="0"
-              type="number"
-              value={budget}
-              onChange={(event) => setBudget(event.target.value)}
-            />
-          </label>
+            <label>
+              Budget USD
+              <input
+                min="0"
+                type="number"
+                value={budget}
+                onChange={(event) => setBudget(event.target.value)}
+              />
+            </label>
+          </div>
 
           <fieldset>
             <legend>Colors</legend>
@@ -101,23 +129,25 @@ export default function App() {
             </div>
           </fieldset>
 
-          <label>
-            Playstyle
-            <input value={playstyle} onChange={(event) => setPlaystyle(event.target.value)} />
-          </label>
+          <div className="form-grid">
+            <label>
+              Playstyle
+              <input value={playstyle} onChange={(event) => setPlaystyle(event.target.value)} />
+            </label>
+
+            <label>
+              Must Include
+              <input
+                placeholder="Ragavan, Ledger Shredder"
+                value={mustInclude}
+                onChange={(event) => setMustInclude(event.target.value)}
+              />
+            </label>
+          </div>
 
           <label className="wide">
             Strategy
             <textarea value={strategy} onChange={(event) => setStrategy(event.target.value)} />
-          </label>
-
-          <label>
-            Must Include
-            <input
-              placeholder="Ragavan, Ledger Shredder"
-              value={mustInclude}
-              onChange={(event) => setMustInclude(event.target.value)}
-            />
           </label>
 
           <label>
@@ -129,10 +159,12 @@ export default function App() {
             />
           </label>
 
-          <button className="submit" disabled={isLoading} type="submit">
-            <Wand2 size={18} />
-            <span>{isLoading ? "Building" : "Generate Deck"}</span>
-          </button>
+          <div className="form-actions">
+            <button className="submit" disabled={isLoading} type="submit">
+              <Wand2 size={18} />
+              <span>{isLoading ? "Building" : "Generate Deck"}</span>
+            </button>
+          </div>
         </form>
 
         {error && <p className="form-error">{error}</p>}

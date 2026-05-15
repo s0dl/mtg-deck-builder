@@ -20,6 +20,11 @@ export type ManaCurveBucket = {
   count: number;
 };
 
+export type AgentStep = {
+  label: string;
+  detail: string;
+};
+
 export type DeckResponse = {
   title: string;
   format: string;
@@ -33,6 +38,8 @@ export type DeckResponse = {
     warnings: string[];
   };
   retrieved_context: string[];
+  agent_steps: AgentStep[];
+  generation_mode: string;
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";

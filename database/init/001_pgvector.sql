@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS rag_documents (
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    embedding VECTOR(1536),
+    embedding VECTOR(384),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (source, source_id)

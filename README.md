@@ -1,83 +1,29 @@
 # MTG Deck Builder Agent
 
-An AI-powered Magic: The Gathering deck building assistant that combines live MCP data, pgvector-backed RAG, and deterministic skill functions. A user describes the format, budget, playstyle, and strategy they want, and the agent returns a coherent deck with explanations.
+AI-assisted Magic: The Gathering deck building app. The backend combines RAG context, live Scryfall card lookups, model-driven agent planning, and deterministic deck validation. The frontend exposes the generation workflow and shows retrieved context, agent activity, validation, pricing, and the final deck list.
 
-## Architecture
+## Project Layout
 
-This repo is organized as a small monorepo:
+- `backend/` - FastAPI service, agent orchestration, RAG, live Scryfall tools, deterministic skills, and ingestion scripts.
+- `frontend/` - React + TypeScript UI for deck requests and generation results.
+- `database/` - Postgres/pgvector initialization.
+- `docs/` - Cross-cutting architecture and handoff notes.
 
-- `backend/` - Python FastAPI service that owns agent orchestration, MCP clients, RAG retrieval, and deterministic deck-building skills.
-- `frontend/` - TypeScript React app for entering deck goals and viewing generated deck plans.
-- `database/` - Postgres/pgvector initialization scripts.
-- `docs/` - Cross-cutting architecture notes.
+## Documentation
 
-## Layers
+- [Docs Index](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Current Handoff](docs/handoff.md)
+- [Backend Docs](docs/backend/README.md)
+- [Backend API Reference](docs/backend/apis.md)
+- [Frontend Docs](docs/frontend/README.md)
 
-### MCP Layer
-
-Live data belongs in `backend/app/mcp`.
-
-This layer is responsible for frequently changing truth:
-
-- Scryfall card lookups
-- Prices
-- Format legality
-- Ban list changes
-
-See `backend/app/mcp/README.md`.
-
-### RAG Layer
-
-The retrieval layer belongs in `backend/app/rag` and uses Postgres with `pgvector`.
-
-Initial production sources:
-
-- Scryfall bulk card dump for card text, mechanics, and keywords
-- Recent tournament results and decklists from the last 1-2 years
-- Format primers and strategy articles from MTGGoldfish and ChannelFireball
-- Foundational strategy content for timeless deck-building principles
-
-See `backend/app/rag/README.md`.
-
-### Skill Functions
-
-Deterministic tools belong in `backend/app/skills`.
-
-These functions validate and score objective deck constraints:
-
-- Deck construction rules
-- Four-copy limit
-- Format legality
-- Mana curve
-- Budget filtering
-- Color identity and type filtering
-- Synergy constraints
-
-See `backend/app/skills/README.md`.
-
-## Ingestion Pipeline
-
-The production-ready path is:
-
-1. Import Scryfall bulk JSON into normalized Postgres tables.
-2. Chunk card, decklist, and article knowledge into embedding documents.
-3. Store embeddings in pgvector.
-4. Schedule MCP refresh jobs for price, legality, and ban-list deltas.
-5. Re-embed only changed knowledge documents.
-
-The current scaffold includes the storage schema and script entry points, but does not download or embed external data by default.
+All project docs live under `docs/`.
 
 ## Quick Start
 
-Copy environment defaults:
-
 ```bash
 cp .env.example .env
-```
-
-Bring up the stack:
-
-```bash
 docker compose up --build
 ```
 
@@ -94,9 +40,9 @@ Backend:
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+python -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,agent]"
 uvicorn app.main:app --reload
 ```
 
@@ -108,11 +54,8 @@ npm install
 npm run dev
 ```
 
-## Current Status
+## Current Generation Flow
 
-This is a scaffold with working service boundaries, schemas, Docker setup, and placeholder agent behavior. The next implementation steps are:
+The preferred path is the OpenAI agent flow. RAG provides initial rules and strategy context, then the model plans extra RAG searches across strategy, rules, and the Scryfall card corpus. The backend validates and finalizes the deck, then calls Scryfall for current prices.
 
-- Add a real embedding provider.
-- Implement Scryfall bulk import in `backend/scripts/ingest_scryfall_bulk.py`.
-- Add scheduled MCP refresh jobs.
-- Replace the placeholder deck generation with retrieval-augmented ranking and construction logic.
+If model generation fails or is disabled, the backend falls back to deterministic assembly.

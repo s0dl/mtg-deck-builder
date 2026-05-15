@@ -4,27 +4,33 @@ Python FastAPI service for MTG Deck Builder Agent.
 
 ## Responsibilities
 
-- Expose the deck generation API.
-- Orchestrate MCP, RAG, and deterministic skills.
+- Expose deck generation and agent status APIs.
+- Orchestrate OpenAI/Ollama agent flows, RAG retrieval, live Scryfall tools, and deterministic skills.
 - Store and query pgvector knowledge documents.
-- Provide ingestion script entry points.
+- Download and ingest rules, articles, meta deck snapshots, and Scryfall card corpus records.
 
-## Layout
+## Documentation
 
-- `app/api` - HTTP route modules.
-- `app/core` - configuration and shared infrastructure.
-- `app/mcp` - live-data clients, starting with Scryfall.
-- `app/rag` - pgvector document models, repository, and retrieval.
-- `app/skills` - deterministic deck validation and scoring functions.
-- `app/models` - request/response schemas.
-- `scripts` - ingestion and maintenance jobs.
+- [Backend Docs Index](../docs/backend/README.md)
+- [API Reference](../docs/backend/apis.md)
+- [Agent Module](../docs/backend/modules/agent.md)
+- [API Module](../docs/backend/modules/api.md)
+- [Core Module](../docs/backend/modules/core.md)
+- [LLM Module](../docs/backend/modules/llm.md)
+- [MCP Module](../docs/backend/modules/mcp.md)
+- [Models Module](../docs/backend/modules/models.md)
+- [RAG Module](../docs/backend/modules/rag.md)
+- [Scripts Module](../docs/backend/modules/scripts.md)
+- [Skills Module](../docs/backend/modules/skills.md)
+
+Module-local implementation notes are also kept under `app/*/README.md` where useful.
 
 ## Development
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+python -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,agent]"
 uvicorn app.main:app --reload
 ```
 
@@ -32,19 +38,15 @@ uvicorn app.main:app --reload
 
 ```bash
 pytest
+python -m ruff check app tests scripts
 ```
 
-## RAG Commands
+## Common Operations
 
-Seed a small local corpus:
+Check agent configuration:
 
 ```bash
-python -m scripts.seed_rag
+curl http://localhost:8000/api/agent/status
 ```
 
-Download and import Scryfall default cards:
-
-```bash
-python -m scripts.download_scryfall_bulk --output data/scryfall-default-cards.json
-python -m scripts.ingest_scryfall_bulk data/scryfall-default-cards.json
-```
+Run ingestion from the same environment that can reach Postgres. In Docker, use `docker compose exec backend ...`. From the host, make sure `DATABASE_URL` points at `localhost`, not Docker's internal `postgres` hostname.

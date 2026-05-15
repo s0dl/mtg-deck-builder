@@ -42,6 +42,11 @@ class DeckValidation(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class AgentStep(BaseModel):
+    label: str
+    detail: str
+
+
 class DeckResponse(BaseModel):
     title: str
     format: Format
@@ -51,3 +56,5 @@ class DeckResponse(BaseModel):
     mana_curve: list[ManaCurveBucket] = Field(default_factory=list)
     validation: DeckValidation
     retrieved_context: list[str] = Field(default_factory=list)
+    agent_steps: list[AgentStep] = Field(default_factory=list)
+    generation_mode: str = "deterministic"

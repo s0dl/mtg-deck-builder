@@ -18,6 +18,8 @@ def validate_deck(cards: list[dict], mtg_format: Format) -> DeckValidation:
     minimum = 100 if mtg_format == Format.commander else 60
     if total_cards < minimum:
         warnings.append(f"Deck has {total_cards} cards; {mtg_format.value} usually needs {minimum}.")
+    if total_cards > minimum:
+        errors.append(f"Deck has {total_cards} cards; this builder currently returns {minimum}-card maindecks.")
 
     for card in cards:
         if card["name"] not in BASIC_LANDS and card["count"] > 4 and mtg_format != Format.commander:

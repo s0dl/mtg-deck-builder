@@ -1,9 +1,15 @@
 """Seed a small local RAG corpus for development."""
 
+import logging
+
+from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.core.logging import configure_logging, log_extra
 from app.rag.embeddings import get_embedding_provider
 from app.rag.ingestion import build_strategy_document
 from app.rag.repository import RagRepository
+
+logger = logging.getLogger(__name__)
 
 SEED_DOCUMENTS = [
     {
@@ -44,15 +50,22 @@ SEED_DOCUMENTS = [
 
 
 def main() -> None:
+    settings = get_settings()
+    configure_logging(settings.log_level, settings.log_format)
     documents = []
     for seed in SEED_DOCUMENTS:
         documents.extend(build_strategy_document(**seed))
 
+    logger.info("Prepared seed RAG documents", extra=log_extra(document_count=len(documents)))
     with SessionLocal() as session:
         repository = RagRepository(session, get_embedding_provider())
-        count = repository.upsert_many(documents)
+        count = repository.upsert_many(
+            documents,
+            batch_size=settings.rag_ingest_batch_size,
+            batch_delay_seconds=settings.rag_ingest_batch_delay_seconds,
+        )
 
-    print(f"Seeded {count} RAG documents")
+    logger.info("Seeded RAG documents", extra=log_extra(imported=count))
 
 
 if __name__ == "__main__":

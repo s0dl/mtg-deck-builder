@@ -20,10 +20,34 @@ def chunk_text(text: str, max_words: int = 260, overlap_words: int = 40) -> list
 
 
 def join_card_fields(card: dict) -> str:
+    legal_formats = [
+        mtg_format
+        for mtg_format, status in (card.get("legalities") or {}).items()
+        if status == "legal"
+    ]
     fields: Iterable[str | None] = (
-        card.get("name"),
-        card.get("type_line"),
-        card.get("oracle_text"),
-        card.get("keywords") and ", ".join(card["keywords"]),
+        _labeled("Name", card.get("name")),
+        _labeled("Type", card.get("type_line")),
+        _labeled("Mana value", card.get("cmc")),
+        _labeled("Colors", _join_list(card.get("colors"))),
+        _labeled("Color identity", _join_list(card.get("color_identity"))),
+        _labeled("Keywords", _join_list(card.get("keywords"))),
+        _labeled("Legal formats", _join_list(legal_formats)),
+        _labeled("Oracle text", card.get("oracle_text")),
     )
     return "\n".join(field for field in fields if field)
+
+
+def _join_list(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    return ", ".join(str(item) for item in value if item)
+
+
+def _labeled(label: str, value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return f"{label}: {text}"
