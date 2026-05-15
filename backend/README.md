@@ -5,7 +5,7 @@ Python FastAPI service for MTG Deck Builder Agent.
 ## Responsibilities
 
 - Expose deck generation and agent status APIs.
-- Orchestrate OpenAI/Ollama agent flows, RAG retrieval, live Scryfall tools, and deterministic skills.
+- Orchestrate OpenAI Agents SDK/Ollama agent flows, MCP-routed RAG retrieval, live Scryfall tools, and deterministic skills.
 - Store and query pgvector knowledge documents.
 - Download and ingest rules, articles, meta deck snapshots, and Scryfall card corpus records.
 

@@ -1,4 +1,5 @@
 from app.agent.tools import DeckAgentTools
+from app.mcp.server import DeckBuilderMcpServer
 from app.models.deck import DeckRequest, Format
 from app.rag.retriever import RetrievedDocument
 
@@ -34,6 +35,20 @@ class FakeRetriever:
                     if str(document.metadata.get(key) or "").lower() in normalized_values
                 ]
         return documents[:limit]
+
+    def search_by_metadata_prefix(
+        self,
+        source: str,
+        metadata_key: str,
+        prefixes: list[str],
+        limit: int = 10,
+    ) -> list[RetrievedDocument]:
+        return [
+            document
+            for document in self.text_documents
+            if document.source == source
+            and any(str(document.metadata.get(metadata_key) or "").startswith(prefix) for prefix in prefixes)
+        ][:limit]
 
 
 def card_document(
@@ -150,3 +165,22 @@ def test_search_card_corpus_combines_vector_and_text_results() -> None:
     )
 
     assert {result["title"] for result in results} == {"Monastery Swiftspear", "Slickshot Show-Off"}
+
+
+def test_mcp_server_lists_all_agent_tool_categories() -> None:
+    server = DeckBuilderMcpServer(retriever=FakeRetriever([]))
+
+    tool_names = {tool["name"] for tool in server.list_tools()}
+
+    assert {
+        "search_rag_text",
+        "search_rag_vector",
+        "search_rag_metadata_prefixes",
+        "search_strategy",
+        "search_meta_decks",
+        "search_rules",
+        "search_card_corpus",
+        "search_cards_scryfall",
+        "lookup_card",
+        "validate_deck_cards",
+    }.issubset(tool_names)

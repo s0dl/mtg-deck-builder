@@ -11,10 +11,9 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.logging import log_extra
 from app.llm.deck_builder import OpenAIDeckBuilder
-from app.mcp.scryfall_client import ScryfallClient, scryfall_card_to_document
-from app.models.deck import DeckRequest, DeckResponse, Format
+from app.mcp.server import DeckBuilderMcpServer, payload_to_retrieved_document
+from app.models.deck import DeckRequest, DeckResponse, DeckValidation, Format
 from app.rag.retriever import RagRetriever, RetrievedDocument
-from app.skills.deck_rules import validate_deck
 from app.skills.deck_evaluation import rank_candidate_documents
 from app.skills.mana_curve import calculate_mana_curve
 
@@ -616,18 +615,18 @@ async def _live_scryfall_card_context(
     request: DeckRequest,
     strategy_context: list[RetrievedDocument],
     max_cards: int,
-    client: ScryfallClient | None = None,
+    mcp_server: DeckBuilderMcpServer,
 ) -> list[RetrievedDocument]:
-    client = client or ScryfallClient()
     documents: list[RetrievedDocument] = []
     seen_names: set[str] = set()
     avoided_names = {name.lower() for name in request.avoid}
 
-    async def add_card(card: dict[str, Any]) -> None:
-        name = str(card.get("name") or "")
+    def add_document(document: RetrievedDocument | None) -> None:
+        if document is None:
+            return
+        name = str(document.metadata.get("name") or document.title)
         if not name or name.lower() in avoided_names or name in seen_names:
             return
-        document = scryfall_card_to_document(card)
         if not _is_candidate_nonland_document(document, request.format, _requested_color_set(request)):
             return
         seen_names.add(name)
@@ -635,7 +634,7 @@ async def _live_scryfall_card_context(
 
     for name in request.must_include:
         try:
-            await add_card(await client.get_card_named(name))
+            add_document(payload_to_retrieved_document(await mcp_server.call_tool("lookup_card", {"name": name})))
         except httpx.HTTPError as exc:
             logger.warning(
                 "Scryfall requested card lookup failed",
@@ -646,7 +645,10 @@ async def _live_scryfall_card_context(
         if len(documents) >= max_cards:
             break
         try:
-            payload = await client.search_cards(query=query)
+            payloads = await mcp_server.call_tool(
+                "search_cards_scryfall",
+                {"query": query, "limit": max_cards - len(documents)},
+            )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 continue
@@ -662,8 +664,8 @@ async def _live_scryfall_card_context(
             )
             continue
 
-        for card in payload.get("data", []):
-            await add_card(card)
+        for payload in payloads:
+            add_document(payload_to_retrieved_document(payload))
             if len(documents) >= max_cards:
                 break
 
@@ -880,9 +882,32 @@ def _documents_from_agent_context_payloads(agent_result: dict) -> list[Retrieved
     return documents
 
 
+def _documents_from_mcp_payloads(payloads: Any) -> list[RetrievedDocument]:
+    if not isinstance(payloads, list):
+        return []
+    return [
+        document
+        for payload in payloads
+        if (document := payload_to_retrieved_document(payload)) is not None
+    ]
+
+
+def _validate_deck_with_mcp(
+    cards: list[dict],
+    mtg_format: Format,
+    mcp_server: DeckBuilderMcpServer,
+) -> DeckValidation:
+    return DeckValidation.model_validate(
+        mcp_server.call_tool_sync(
+            "validate_deck_cards",
+            {"cards": cards, "mtg_format": mtg_format.value},
+        )
+    )
+
+
 async def _enrich_prices_with_scryfall(
     cards: list[dict],
-    client: ScryfallClient,
+    mcp_server: DeckBuilderMcpServer,
     steps: list[dict[str, str]],
 ) -> list[dict]:
     enriched_cards = [dict(card) for card in cards]
@@ -894,9 +919,11 @@ async def _enrich_prices_with_scryfall(
             continue
         checked += 1
         try:
-            document = scryfall_card_to_document(await client.get_card_named(name))
+            document = payload_to_retrieved_document(await mcp_server.call_tool("lookup_card", {"name": name}))
         except httpx.HTTPError as exc:
             steps.append({"label": "Scryfall price check failed", "detail": f"{name} -> {exc}"})
+            continue
+        if document is None:
             continue
         price = document.metadata.get("estimated_price_usd")
         if price is not None:
@@ -945,47 +972,78 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
     )
     requested_colors = _requested_color_set(request)
     candidate_query = _candidate_card_query(request)
-    rules_context = retriever.search_text(
-        query=_rules_query_for_request(request),
-        limit=4,
-        source="mtg_comprehensive_rules",
+    mcp_server = DeckBuilderMcpServer(retriever=retriever)
+    rules_context = _documents_from_mcp_payloads(
+        mcp_server.call_tool_sync(
+            "search_rag_text",
+            {
+                "query": _rules_query_for_request(request),
+                "limit": 4,
+                "source": "mtg_comprehensive_rules",
+            },
+        )
     )
     rules_context.extend(
-        retriever.search_by_metadata_prefix(
-            source="mtg_comprehensive_rules",
-            metadata_key="rule_number",
-            prefixes=_rules_prefixes_for_request(request),
-            limit=8,
+        _documents_from_mcp_payloads(
+            mcp_server.call_tool_sync(
+                "search_rag_metadata_prefixes",
+                {
+                    "source": "mtg_comprehensive_rules",
+                    "metadata_key": "rule_number",
+                    "prefixes": _rules_prefixes_for_request(request),
+                    "limit": 8,
+                },
+            )
         )
     )
     rules_context = _dedupe_documents(rules_context)
-    strategy_context = retriever.search_text(
-        query=_strategy_query(request, candidate_query) or "deck building strategy",
-        limit=60,
-        source="mtgdecks_articles",
-        metadata_filters={"format": [request.format.value, ""]} if request.format != Format.casual else None,
+    strategy_context = _documents_from_mcp_payloads(
+        mcp_server.call_tool_sync(
+            "search_rag_text",
+            {
+                "query": _strategy_query(request, candidate_query) or "deck building strategy",
+                "limit": 60,
+                "source": "mtgdecks_articles",
+                "metadata_filters": {"format": [request.format.value, ""]} if request.format != Format.casual else None,
+            },
+        )
     )
     strategy_context = _filter_strategy_documents(strategy_context, request.format)[:18]
     general_strategy_query = _general_strategy_query(request)
     strategy_context = _dedupe_documents(
         [
             *strategy_context,
-            *retriever.search_text(
-                query=_strategy_query(request, candidate_query) or f"{request.format.value} metagame decks",
-                limit=30,
-                source="mtgdecks_meta_decks",
-                metadata_filters={"format": [request.format.value]} if request.format != Format.casual else None,
+            *_documents_from_mcp_payloads(
+                mcp_server.call_tool_sync(
+                    "search_rag_text",
+                    {
+                        "query": _strategy_query(request, candidate_query) or f"{request.format.value} metagame decks",
+                        "limit": 30,
+                        "source": "mtgdecks_meta_decks",
+                        "metadata_filters": {"format": [request.format.value]} if request.format != Format.casual else None,
+                    },
+                )
             ),
-            *retriever.search_text(
-                query=general_strategy_query,
-                limit=30,
-                source="mtgdecks_articles",
-                metadata_filters={"format": [""]},
+            *_documents_from_mcp_payloads(
+                mcp_server.call_tool_sync(
+                    "search_rag_text",
+                    {
+                        "query": general_strategy_query,
+                        "limit": 30,
+                        "source": "mtgdecks_articles",
+                        "metadata_filters": {"format": [""]},
+                    },
+                )
             ),
-            *retriever.search_text(
-                query=general_strategy_query,
-                limit=10,
-                source="foundational_strategy",
+            *_documents_from_mcp_payloads(
+                mcp_server.call_tool_sync(
+                    "search_rag_text",
+                    {
+                        "query": general_strategy_query,
+                        "limit": 10,
+                        "source": "foundational_strategy",
+                    },
+                )
             ),
         ]
     )[:30]
@@ -997,6 +1055,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             request=request,
             strategy_context=strategy_context,
             max_cards=max_nonland_cards * 4,
+            mcp_server=mcp_server,
         )
     logger.info(
         "Deck generation card context assembled",
@@ -1051,7 +1110,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         try:
             agent_result = await OpenAIDeckAgent(
                 settings=settings,
-                tools=DeckAgentTools(retriever=retriever, scryfall=ScryfallClient()),
+                tools=DeckAgentTools(mcp_server=mcp_server),
             ).generate(
                 request=request,
                 card_context=card_context,
@@ -1084,7 +1143,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             model_cards = _coerce_model_cards(selected_cards, allowed_names)
             if model_cards:
                 model_cards = _finalize_deck_cards(model_cards, request, context)
-                validation = validate_deck(cards=model_cards, mtg_format=request.format)
+                validation = _validate_deck_with_mcp(model_cards, request.format, mcp_server)
                 if not validation.is_valid:
                     raise ValueError(f"OpenAI agent deck failed validation: {validation.errors}")
                 agent_steps.append(
@@ -1098,7 +1157,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 )
                 model_cards = await _enrich_prices_with_scryfall(
                     cards=model_cards,
-                    client=ScryfallClient(),
+                    mcp_server=mcp_server,
                     steps=agent_steps,
                 )
                 mana_curve = calculate_mana_curve(model_cards)
@@ -1136,6 +1195,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     request=request,
                     strategy_context=strategy_context,
                     max_cards=max_nonland_cards * 4,
+                    mcp_server=mcp_server,
                 )
                 retrieved_cards = _cards_from_retrieved_documents(
                     card_context,
@@ -1150,7 +1210,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         try:
             agent_result = await OllamaDeckAgent(
                 settings=settings,
-                tools=DeckAgentTools(retriever=retriever, scryfall=ScryfallClient()),
+                tools=DeckAgentTools(mcp_server=mcp_server),
             ).generate(
                 request=request,
                 card_context=card_context,
@@ -1183,7 +1243,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             model_cards = _coerce_model_cards(selected_cards, allowed_names)
             if model_cards:
                 model_cards = _finalize_deck_cards(model_cards, request, context)
-                validation = validate_deck(cards=model_cards, mtg_format=request.format)
+                validation = _validate_deck_with_mcp(model_cards, request.format, mcp_server)
                 if not validation.is_valid:
                     raise ValueError(f"Ollama deck failed validation: {validation.errors}")
                 agent_steps.append(
@@ -1197,7 +1257,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 )
                 model_cards = await _enrich_prices_with_scryfall(
                     cards=model_cards,
-                    client=ScryfallClient(),
+                    mcp_server=mcp_server,
                     steps=agent_steps,
                 )
                 mana_curve = calculate_mana_curve(model_cards)
@@ -1266,7 +1326,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             model_cards = _coerce_model_cards(model_result.get("cards", []), allowed_names)
             if model_cards:
                 model_cards = _finalize_deck_cards(model_cards, request, context)
-                validation = validate_deck(cards=model_cards, mtg_format=request.format)
+                validation = _validate_deck_with_mcp(model_cards, request.format, mcp_server)
                 if not validation.is_valid:
                     raise ValueError(f"OpenAI deck failed validation: {validation.errors}")
                 agent_steps.append(
@@ -1286,7 +1346,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 )
                 model_cards = await _enrich_prices_with_scryfall(
                     cards=model_cards,
-                    client=ScryfallClient(),
+                    mcp_server=mcp_server,
                     steps=agent_steps,
                 )
                 mana_curve = calculate_mana_curve(model_cards)
@@ -1329,7 +1389,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
 
     cards = _finalize_deck_cards(cards, request, context)
 
-    validation = validate_deck(cards=cards, mtg_format=request.format)
+    validation = _validate_deck_with_mcp(cards, request.format, mcp_server)
     agent_steps.append(
         {
             "label": "Deck validation",
@@ -1341,7 +1401,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
     )
     cards = await _enrich_prices_with_scryfall(
         cards=cards,
-        client=ScryfallClient(),
+        mcp_server=mcp_server,
         steps=agent_steps,
     )
     mana_curve = calculate_mana_curve(cards)

@@ -22,20 +22,33 @@ The FastAPI backend exposes:
 - `GET /api/agent/status`
 - `POST /api/decks/generate`
 
-The backend assembles request context, runs the configured agent path, calls constrained tools, validates the deck, and returns a typed response.
+The backend assembles request context, creates a request-scoped MCP tool server, runs the configured agent path, calls constrained tools, validates the deck, and returns a typed response.
 
 ### Agent Layer
 
-The preferred generation path is the OpenAI agent in `backend/app/agent`.
+The preferred generation path is the OpenAI Agents SDK-backed agent in `backend/app/agent`.
 
 RAG supplies rules and strategy context first. The model then decides which constrained tools to call:
 
 - `search_strategy`
+- `search_meta_decks`
 - `search_rules`
+- `search_card_corpus`
 - `search_cards_scryfall`
 - `validate_deck_cards`
 
-Tool calls are executed by the backend, not by arbitrary model-side code. Live Scryfall payloads become candidate card context and are reused after deterministic validation to refresh prices and card facts.
+Tool calls are executed by the backend through `DeckBuilderMcpServer`, not by arbitrary model-side code. Live Scryfall payloads become candidate card context and are reused after deterministic validation to refresh prices and card facts.
+
+### MCP Tool Layer
+
+`backend/app/mcp/server.py` registers the deck-builder tools used by agents and backend fallback flows:
+
+- RAG text/vector/prefix search.
+- Strategy, meta-deck, rules, and card corpus search.
+- Live Scryfall search and exact card lookup.
+- Deterministic deck validation.
+
+`DeckAgentTools` is only a client facade over this server. Initial RAG retrieval, model-planned RAG calls, model-planned Scryfall calls, fallback live card discovery, and price refresh all route through the same MCP server boundary.
 
 Ollama remains available as an optional local experiment, but smaller local models may fail to produce stable structured deck output.
 
@@ -66,14 +79,14 @@ The backend also finalizes model-selected cards by merging duplicates, trimming 
 
 1. The frontend submits a `DeckRequest`.
 2. FastAPI creates a request-scoped database session.
-3. The backend retrieves strategy, rules, and meta context from RAG.
+3. The backend retrieves strategy, rules, and meta context through MCP RAG tools.
 4. If the OpenAI agent is enabled, the model first plans extra RAG calls for strategy/meta/rules context.
-5. The backend executes those constrained RAG tool calls and feeds the returned documents back to the model.
+5. The backend executes those constrained MCP RAG tool calls and feeds the returned documents back to the model.
 6. The model then plans live Scryfall searches from the retrieved documents.
-7. The backend executes those live Scryfall searches.
+7. The backend executes those MCP live Scryfall searches.
 8. The model selects cards from the returned live Scryfall context.
 9. The backend merges, trims, sizes, and validates the deck.
-10. The backend calls Scryfall to refresh prices after validation.
+10. The backend calls the MCP lookup tool to refresh Scryfall prices after validation.
 11. If the agent path fails, the backend falls back to deterministic construction.
 12. The response includes cards, validation, mana curve, retrieved context, `agent_steps`, and `generation_mode`.
 
@@ -82,9 +95,9 @@ The backend also finalizes model-selected cards by merging duplicates, trimming 
 ```text
 React UI
   -> FastAPI /api/decks/generate
-  -> RAG retrieval for rules/strategy/meta
+  -> MCP RAG tools for rules/strategy/meta
   -> agent planning
-  -> backend RAG tool execution
+  -> MCP RAG/Scryfall tool execution
   -> model card selection
   -> deterministic finalization
   -> Scryfall price checks

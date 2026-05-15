@@ -6,6 +6,8 @@ Path: `app/rag`
 
 The RAG module stores and retrieves indexed knowledge in Postgres with pgvector.
 
+Runtime retrieval is executed through `app.mcp.server.DeckBuilderMcpServer`; this module owns storage and retrieval primitives, while the MCP layer owns tool schemas and access control.
+
 ## Main Files
 
 - `documents.py` - SQLAlchemy document model.

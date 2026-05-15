@@ -1,18 +1,30 @@
-# Live Data Adapter Layer
+# MCP Tool Layer
 
-This directory currently contains live Magic data adapters. It is not an MCP protocol server yet: there is no MCP transport, server manifest, or externally callable MCP tool registry in this project.
+This directory contains the request-scoped MCP tool server and live Magic data adapters.
 
-## Initial Provider
+## Main Files
 
-`scryfall_client.py` wraps Scryfall API calls for:
+- `server.py` registers and executes deck-builder MCP tools for RAG, live Scryfall, card corpus search, and validation.
+- `scryfall_client.py` wraps Scryfall API calls for card lookup, search, price fields, and legality fields.
 
-- Card lookup
-- Search
-- Price fields
-- Legality fields
+## Tools
+
+`DeckBuilderMcpServer` exposes:
+
+- `search_rag_text`
+- `search_rag_vector`
+- `search_rag_metadata_prefixes`
+- `search_strategy`
+- `search_meta_decks`
+- `search_rules`
+- `search_card_corpus`
+- `search_cards_scryfall`
+- `lookup_card`
+- `validate_deck_cards`
 
 ## Production Responsibilities
 
+- Keep RAG, Scryfall, and validation calls behind one constrained tool registry.
 - Fetch current card data at request time when price or legality matters.
 - Refresh changed card metadata on a schedule.
 - Push changed card text or legality documents into the RAG ingestion pipeline when those changes affect retrieval.
@@ -20,7 +32,3 @@ This directory currently contains live Magic data adapters. It is not an MCP pro
 ## Boundary
 
 Do not put strategic opinions here. This layer should return live facts. Strategy belongs in RAG and deterministic constraints belong in skills.
-
-## MCP Direction
-
-To make this a real MCP integration, expose the Scryfall operations through an MCP server process and have the agent call those tools through the MCP protocol instead of importing `ScryfallClient` directly.

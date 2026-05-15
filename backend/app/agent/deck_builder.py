@@ -6,11 +6,13 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
 from app.agent.tools import DeckAgentTools
 from app.core.config import Settings
 from app.core.logging import log_extra
-from app.llm.deck_builder import _document_to_model_context, _extract_json_response
+from app.core.openai_agents import run_structured_openai_agent
+from app.llm.deck_builder import _document_to_model_context
 from app.models.deck import DeckRequest
 from app.rag.retriever import RetrievedDocument
 from app.skills.deck_evaluation import rank_candidate_cards
@@ -61,6 +63,30 @@ AGENT_SELECTION_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+
+class AgentRagPlanOutput(BaseModel):
+    thoughts: list[str] = Field(default_factory=list)
+    strategy_queries: list[str] = Field(default_factory=list)
+    meta_deck_queries: list[str] = Field(default_factory=list)
+    rules_queries: list[str] = Field(default_factory=list)
+
+
+class AgentScryfallPlanOutput(BaseModel):
+    thoughts: list[str] = Field(default_factory=list)
+    scryfall_queries: list[str] = Field(default_factory=list)
+
+
+class AgentSelectedCardOutput(BaseModel):
+    name: str
+    count: int = Field(ge=1, le=4)
+    role: str
+
+
+class AgentSelectionOutput(BaseModel):
+    title: str
+    explanation: str
+    selected_cards: list[AgentSelectedCardOutput] = Field(default_factory=list)
 
 
 class AbstractDeckAgent(ABC):
@@ -223,11 +249,9 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
-                            "available_tools": [
-                                "search_strategy(query, format, limit)",
-                                "search_meta_decks(query, format, limit)",
-                                "search_rules(intent, limit)",
-                            ],
+                            "available_tools": self.tools.tool_signatures(
+                                ("search_strategy", "search_meta_decks", "search_rules")
+                            ),
                             "retrieved_rules_context": [
                                 _document_to_model_context(document) for document in rules_context[:8]
                             ],
@@ -277,7 +301,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
-                            "available_tools": ["search_cards_scryfall(query, limit)"],
+                            "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
                             "retrieved_strategy_context": [
                                 _document_to_model_context(document) for document in rag_context["strategy"][:12]
                             ],
@@ -720,44 +744,32 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         rules_context: list[RetrievedDocument],
         strategy_context: list[RetrievedDocument],
     ) -> dict[str, Any]:
-        payload = {
-            "model": self.settings.openai_model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a constrained Magic: The Gathering deck-building agent. "
-                        "First, plan only the extra RAG tool calls needed before deck construction. "
-                        "Use strategy, meta-deck, and rules searches to gather context for the deck. "
-                        "Do not plan any live Scryfall card searches yet."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "request": request.model_dump(mode="json"),
-                            "available_tools": [
-                                "search_strategy(query, format, limit)",
-                                "search_meta_decks(query, format, limit)",
-                                "search_rules(intent, limit)",
-                            ],
-                            "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rules_context[:8]
-                            ],
-                            "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in strategy_context[:12]
-                            ],
-                        },
-                        separators=(",", ":"),
-                    ),
-                },
+        instructions = (
+            "You are a constrained Magic: The Gathering deck-building agent. "
+            "First, plan only the extra RAG tool calls needed before deck construction. "
+            "Use strategy, meta-deck, and rules searches to gather context for the deck. "
+            "Do not plan any live Scryfall card searches yet."
+        )
+        input_payload = {
+            "request": request.model_dump(mode="json"),
+            "available_tools": self.tools.tool_signatures(
+                ("search_strategy", "search_meta_decks", "search_rules")
+            ),
+            "retrieved_rules_context": [
+                _document_to_model_context(document) for document in rules_context[:8]
             ],
-            "text": _json_schema_format("mtg_agent_rag_plan", AGENT_RAG_PLAN_SCHEMA),
+            "retrieved_strategy_context": [
+                _document_to_model_context(document) for document in strategy_context[:12]
+            ],
         }
         logger.info("OpenAI RAG planning started", extra=log_extra(model=self.settings.openai_model))
-        response = await self._post_response(payload)
-        plan = _extract_json_response(response)
+        plan = await run_structured_openai_agent(
+            settings=self.settings,
+            name="MTG RAG planner",
+            instructions=instructions,
+            input_payload=input_payload,
+            output_type=AgentRagPlanOutput,
+        )
         logger.info(
             "OpenAI RAG planning completed",
             extra=log_extra(
@@ -772,44 +784,34 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         request: DeckRequest,
         rag_context: dict[str, list[RetrievedDocument]],
     ) -> dict[str, Any]:
-        payload = {
-            "model": self.settings.openai_model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a constrained Magic: The Gathering deck-building agent. "
-                        "You already have retrieved strategy, meta-deck, and rules context. "
-                        "Now plan only live Scryfall searches to find cards that match the retrieved "
-                        "documents. Use the documents at hand to name relevant archetype pieces, "
-                        "staples, mana bases, and support cards."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "request": request.model_dump(mode="json"),
-                            "available_tools": ["search_cards_scryfall(query, limit)"],
-                            "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in rag_context["strategy"][:12]
-                            ],
-                            "retrieved_meta_deck_context": [
-                                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
-                            ],
-                            "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rag_context["rules"][:8]
-                            ],
-                        },
-                        separators=(",", ":"),
-                    ),
-                },
+        instructions = (
+            "You are a constrained Magic: The Gathering deck-building agent. "
+            "You already have retrieved strategy, meta-deck, and rules context. "
+            "Now plan only live Scryfall searches to find cards that match the retrieved "
+            "documents. Use the documents at hand to name relevant archetype pieces, "
+            "staples, mana bases, and support cards."
+        )
+        input_payload = {
+            "request": request.model_dump(mode="json"),
+            "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
+            "retrieved_strategy_context": [
+                _document_to_model_context(document) for document in rag_context["strategy"][:12]
             ],
-            "text": _json_schema_format("mtg_agent_scryfall_plan", AGENT_SCRYFALL_PLAN_SCHEMA),
+            "retrieved_meta_deck_context": [
+                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+            ],
+            "retrieved_rules_context": [
+                _document_to_model_context(document) for document in rag_context["rules"][:8]
+            ],
         }
         logger.info("OpenAI live Scryfall planning started", extra=log_extra(model=self.settings.openai_model))
-        response = await self._post_response(payload)
-        plan = _extract_json_response(response)
+        plan = await run_structured_openai_agent(
+            settings=self.settings,
+            name="MTG Scryfall planner",
+            instructions=instructions,
+            input_payload=input_payload,
+            output_type=AgentScryfallPlanOutput,
+        )
         logger.info(
             "OpenAI live Scryfall planning completed",
             extra=log_extra(
@@ -890,66 +892,55 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         land_guidance: dict[str, int],
     ) -> dict[str, Any]:
         candidates = _candidate_payloads(card_context, tool_results, request=request, limit=80)
-        payload = {
-            "model": self.settings.openai_model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a Magic: The Gathering deck-building agent. Select a coherent "
-                        "package of cards from exact candidate names, including useful nonbasic lands "
-                        "when land candidates are available. The backend will apply copy counts, fill "
-                        "missing basic lands, and validate the final list. Use retrieved context for "
-                        "strategy and rules. Return only the requested JSON. Respect deck size and "
-                        "copy constraints: non-Commander constructed decks need at least 60 cards, "
-                        "Commander decks need exactly 100 cards, non-basic cards are limited to four "
-                        "copies in constructed, and Commander should use one copy of each non-basic. "
-                        "Choose counts from 1 to 4 based on role: 4 for core cards, 2-3 for support "
-                        "cards, and 1 for narrow, expensive, situational, or legendary cards. Treat "
-                        "budget_usd as a ceiling for power, not as a request for the cheapest possible "
-                        "deck. For high budgets, prefer meta-proven staples and premium mana bases if "
-                        "they improve the deck while staying under budget."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "request": request.model_dump(mode="json"),
-                            "budget_guidance": _budget_guidance(request),
-                            "land_guidance": land_guidance,
-                            "candidate_cards": candidates,
-                            "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rules_context[:12]
-                            ],
-                            "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in strategy_context[:18]
-                            ],
-                            "retrieved_meta_deck_context": [
-                                payload for payload in tool_results.get("meta_decks", [])[:12] if isinstance(payload, dict)
-                            ],
-                            "agent_tool_results": tool_results,
-                            "instructions": (
-                                "Pick 8 to 22 cards. Use exact candidate names. Include mana-fixing "
-                                "lands that fit the colors and format. If budget_usd is high, use it "
-                                "for stronger staples and a better mana base instead of defaulting to "
-                                "the cheapest legal candidates. Explain the "
-                                "deck's plan using retrieved strategy/rules and live Scryfall data. Return "
-                                "selected_cards with exact name, count, and role."
-                            ),
-                        },
-                        separators=(",", ":"),
-                    ),
-                },
+        instructions = (
+            "You are a Magic: The Gathering deck-building agent. Select a coherent "
+            "package of cards from exact candidate names, including useful nonbasic lands "
+            "when land candidates are available. The backend will apply copy counts, fill "
+            "missing basic lands, and validate the final list. Use retrieved context for "
+            "strategy and rules. Respect deck size and copy constraints: non-Commander "
+            "constructed decks need at least 60 cards, Commander decks need exactly 100 "
+            "cards, non-basic cards are limited to four copies in constructed, and Commander "
+            "should use one copy of each non-basic. Choose counts from 1 to 4 based on role: "
+            "4 for core cards, 2-3 for support cards, and 1 for narrow, expensive, "
+            "situational, or legendary cards. Treat budget_usd as a ceiling for power, not "
+            "as a request for the cheapest possible deck. For high budgets, prefer "
+            "meta-proven staples and premium mana bases if they improve the deck while "
+            "staying under budget."
+        )
+        input_payload = {
+            "request": request.model_dump(mode="json"),
+            "budget_guidance": _budget_guidance(request),
+            "land_guidance": land_guidance,
+            "candidate_cards": candidates,
+            "retrieved_rules_context": [
+                _document_to_model_context(document) for document in rules_context[:12]
             ],
-            "text": _json_schema_format("mtg_agent_selection", AGENT_SELECTION_SCHEMA),
+            "retrieved_strategy_context": [
+                _document_to_model_context(document) for document in strategy_context[:18]
+            ],
+            "retrieved_meta_deck_context": [
+                payload for payload in tool_results.get("meta_decks", [])[:12] if isinstance(payload, dict)
+            ],
+            "agent_tool_results": tool_results,
+            "instructions": (
+                "Pick 8 to 22 cards. Use exact candidate names. Include mana-fixing "
+                "lands that fit the colors and format. If budget_usd is high, use it "
+                "for stronger staples and a better mana base instead of defaulting to "
+                "the cheapest legal candidates. Explain the deck's plan using retrieved "
+                "strategy/rules and live Scryfall data."
+            ),
         }
         logger.info(
             "OpenAI card selection started",
             extra=log_extra(model=self.settings.openai_model, candidate_count=len(candidates)),
         )
-        response = await self._post_response(payload)
-        result = _extract_json_response(response)
+        result = await run_structured_openai_agent(
+            settings=self.settings,
+            name="MTG card selector",
+            instructions=instructions,
+            input_payload=input_payload,
+            output_type=AgentSelectionOutput,
+        )
         logger.info(
             "OpenAI card selection completed",
             extra=log_extra(
@@ -958,27 +949,3 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             ),
         )
         return result
-
-    async def _post_response(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with httpx.AsyncClient(
-            base_url=self.settings.openai_base_url,
-            timeout=90,
-            headers={
-                "Authorization": f"Bearer {self.settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-        ) as client:
-            response = await client.post("/responses", json=payload)
-            response.raise_for_status()
-            return response.json()
-
-
-def _json_schema_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "format": {
-            "type": "json_schema",
-            "name": name,
-            "strict": True,
-            "schema": schema,
-        }
-    }
