@@ -8,8 +8,10 @@ type DeckResultProps = {
 
 export function DeckResult({ deck }: DeckResultProps) {
   const totalCards = deck.cards.reduce((sum, card) => sum + card.count, 0);
-  const totalPrice = deck.cards.reduce((sum, card) => sum + (card.estimated_price_usd ?? 0) * card.count, 0);
-  const hasPrice = deck.cards.some((card) => card.estimated_price_usd != null);
+  const sideboardCards = deck.sideboard.reduce((sum, card) => sum + card.count, 0);
+  const allCards = [...deck.cards, ...deck.sideboard];
+  const totalPrice = allCards.reduce((sum, card) => sum + (card.estimated_price_usd ?? 0) * card.count, 0);
+  const hasPrice = allCards.some((card) => card.estimated_price_usd != null);
 
   return (
     <section className="result-panel" aria-live="polite">
@@ -31,7 +33,7 @@ export function DeckResult({ deck }: DeckResultProps) {
         </div>
         <div className="summary-item">
           <span>Total</span>
-          <strong>{totalCards} cards</strong>
+          <strong>{sideboardCards > 0 ? `${totalCards} main · ${sideboardCards} side` : `${totalCards} cards`}</strong>
         </div>
         <div className="summary-item">
           <span>Context</span>
@@ -75,6 +77,28 @@ export function DeckResult({ deck }: DeckResultProps) {
               </div>
             ))}
           </div>
+
+          {deck.sideboard.length > 0 && (
+            <div className="sideboard-block">
+              <div className="section-heading">
+                <h3>Sideboard</h3>
+                <span>{deck.sideboard.length} unique · {sideboardCards} total</span>
+              </div>
+              <div className="card-list" aria-label="Sideboard cards">
+                {deck.sideboard.map((card) => (
+                  <div className="card-row" key={`sideboard-${card.name}`}>
+                    <div>
+                      <strong>{card.count}x {card.name}</strong>
+                      <span>{card.role}</span>
+                    </div>
+                    {card.estimated_price_usd != null && (
+                      <em>${(card.estimated_price_usd * card.count).toFixed(2)}</em>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <aside className="inspector" aria-label="Agent workflow and deck context">

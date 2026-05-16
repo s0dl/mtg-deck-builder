@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.models.deck import DeckRequest
+
 WorkflowPhase = Literal["rag_planning", "scryfall_planning", "card_selection", "validation"]
 
 
@@ -142,3 +144,36 @@ def workflow_instructions(current_phase: WorkflowPhase) -> str:
     lines.append("Hard rules:")
     lines.extend(f"- {rule}" for rule in HARD_RULES)
     return "\n".join(lines)
+
+
+def request_constraints_payload(request: DeckRequest) -> dict[str, Any]:
+    """Return explicit model-facing request constraints beyond the raw request JSON."""
+    return {
+        "must_include": list(request.must_include),
+        "avoid": list(request.avoid),
+        "instructions": request_constraints_instructions(request),
+    }
+
+
+def request_constraints_instructions(request: DeckRequest) -> str:
+    """Return prompt text for must-include and avoid constraints."""
+    lines: list[str] = []
+    if request.must_include:
+        lines.append(
+            "Must include these cards if they are legal, in color identity, and available in candidates: "
+            + ", ".join(request.must_include)
+            + "."
+        )
+    else:
+        lines.append("No explicit must-include cards were requested.")
+
+    if request.avoid:
+        lines.append(
+            "Avoid these card names, mechanics, or terms when planning searches and selecting cards: "
+            + ", ".join(request.avoid)
+            + "."
+        )
+    else:
+        lines.append("No explicit avoid terms were requested.")
+
+    return " ".join(lines)

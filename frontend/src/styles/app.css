@@ -370,6 +370,10 @@ h3 {
   border-top: 1px solid var(--border);
 }
 
+.sideboard-block {
+  margin-top: 24px;
+}
+
 .card-row {
   min-width: 0;
   display: grid;

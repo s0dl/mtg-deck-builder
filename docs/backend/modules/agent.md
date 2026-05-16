@@ -8,6 +8,7 @@ The agent module coordinates model-controlled deck construction without giving t
 
 ## Main Files
 
+- `context.py` - shared document-to-model payload formatting for agent prompts.
 - `deck_builder.py` - OpenAI Agents SDK and Ollama agent implementations.
 - `tools.py` - agent-facing client facade over `app.mcp.server.DeckBuilderMcpServer`.
 

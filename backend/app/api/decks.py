@@ -10,7 +10,6 @@ from app.agent.tools import DeckAgentTools
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.logging import log_extra
-from app.llm.deck_builder import OpenAIDeckBuilder
 from app.mcp.server import DeckBuilderMcpServer, payload_to_retrieved_document
 from app.models.deck import DeckRequest, DeckResponse, DeckValidation, Format
 from app.rag.retriever import RagRetriever, RetrievedDocument
@@ -73,6 +72,15 @@ PLAYSTYLE_QUERY_TERMS = {
 }
 
 LIVE_CARD_SOURCES = {"scryfall_live", "scryfall_bulk"}
+CONSTRUCTED_SIDEBOARD_FORMATS = {
+    Format.standard,
+    Format.pioneer,
+    Format.modern,
+    Format.legacy,
+    Format.vintage,
+    Format.pauper,
+}
+SIDEBOARD_SIZE = 15
 
 
 def _is_basic_land(card_name: str) -> bool:
@@ -272,6 +280,95 @@ def _finalize_deck_cards(
     _shape_deck_size(finalized, request, documents)
     _trim_to_max_deck_size(finalized, request)
     return finalized
+
+
+def _supports_sideboard(mtg_format: Format) -> bool:
+    return mtg_format in CONSTRUCTED_SIDEBOARD_FORMATS
+
+
+def _sideboard_card_count(document: RetrievedDocument, missing_count: int, remaining_copy_slots: int) -> int:
+    type_line = str(document.metadata.get("type_line") or "")
+    is_legendary = "Legendary" in type_line.split(" ")
+    preferred_count = 1 if is_legendary else 2
+    return max(0, min(preferred_count, missing_count, remaining_copy_slots))
+
+
+def _build_sideboard_cards(
+    request: DeckRequest,
+    documents: list[RetrievedDocument],
+    main_deck: list[dict],
+) -> list[dict]:
+    if not _supports_sideboard(request.format):
+        return []
+
+    requested_colors = _requested_color_set(request)
+    main_counts = {str(card.get("name") or ""): int(card.get("count") or 0) for card in main_deck}
+    seen_names = {name for name, count in main_counts.items() if count >= 4}
+    sideboard: list[dict] = []
+    total_sideboard_cards = 0
+
+    for document in rank_candidate_documents(documents, request, include_lands=False):
+        if total_sideboard_cards >= SIDEBOARD_SIZE:
+            break
+        if not _is_candidate_nonland_document(document, request.format, requested_colors):
+            continue
+
+        name = str(document.metadata.get("name") or document.title)
+        if not name or name in seen_names or _is_basic_land(name):
+            continue
+
+        remaining_copy_slots = 4 - main_counts.get(name, 0)
+        count = _sideboard_card_count(
+            document=document,
+            missing_count=SIDEBOARD_SIZE - total_sideboard_cards,
+            remaining_copy_slots=remaining_copy_slots,
+        )
+        if count <= 0:
+            continue
+
+        seen_names.add(name)
+        sideboard.append(
+            {
+                "name": name,
+                "count": count,
+                "role": _sideboard_role(document),
+                "mana_value": document.metadata.get("mana_value"),
+                "estimated_price_usd": document.metadata.get("estimated_price_usd"),
+            }
+        )
+        total_sideboard_cards += count
+
+    return sideboard
+
+
+def _build_sideboard_with_steps(
+    request: DeckRequest,
+    documents: list[RetrievedDocument],
+    main_deck: list[dict],
+    steps: list[dict[str, str]],
+) -> list[dict]:
+    sideboard = _build_sideboard_cards(request=request, documents=documents, main_deck=main_deck)
+    if _supports_sideboard(request.format):
+        steps.append(
+            {
+                "label": "Sideboard construction",
+                "detail": (
+                    f"Built {sum(card['count'] for card in sideboard)} sideboard cards from "
+                    "legal live candidate context."
+                ),
+            }
+        )
+    return sideboard
+
+
+def _sideboard_role(document: RetrievedDocument) -> str:
+    type_line = str(document.metadata.get("type_line") or "")
+    content = str(document.content or "").lower()
+    if any(term in content for term in ("destroy", "exile", "counter", "damage", "prevent")):
+        return type_line or "sideboard interaction"
+    if any(term in content for term in ("graveyard", "can't", "cannot", "protection")):
+        return type_line or "sideboard hate card"
+    return type_line or "sideboard option"
 
 
 def _max_nonland_cards(mtg_format: Format) -> int:
@@ -1066,10 +1163,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         ),
     )
 
-    cards = [
-        {"name": name, "count": 1, "role": "requested card", "estimated_price_usd": None}
-        for name in request.must_include
-    ]
+    cards: list[dict] = []
 
     retrieved_cards = _cards_from_retrieved_documents(
         card_context,
@@ -1160,6 +1254,12 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     mcp_server=mcp_server,
                     steps=agent_steps,
                 )
+                sideboard = _build_sideboard_with_steps(
+                    request=request,
+                    documents=card_context,
+                    main_deck=model_cards,
+                    steps=agent_steps,
+                )
                 mana_curve = calculate_mana_curve(model_cards)
                 response_context = _response_context_documents(
                     card_context=card_context,
@@ -1172,6 +1272,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     title=agent_result.get("title") or f"{request.format.value.title()} OpenAI Agent Draft",
                     format=request.format,
                     cards=model_cards,
+                    sideboard=sideboard,
                     explanation=agent_result.get("explanation")
                     or "Selected by the OpenAI agent using RAG strategy, rules, and live Scryfall tools.",
                     mana_curve=mana_curve,
@@ -1260,6 +1361,12 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     mcp_server=mcp_server,
                     steps=agent_steps,
                 )
+                sideboard = _build_sideboard_with_steps(
+                    request=request,
+                    documents=card_context,
+                    main_deck=model_cards,
+                    steps=agent_steps,
+                )
                 mana_curve = calculate_mana_curve(model_cards)
                 response_context = _response_context_documents(
                     card_context=card_context,
@@ -1272,6 +1379,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     title=agent_result.get("title") or f"{request.format.value.title()} Agent Draft",
                     format=request.format,
                     cards=model_cards,
+                    sideboard=sideboard,
                     explanation=agent_result.get("explanation")
                     or "Selected by the local Ollama agent using RAG strategy, rules, and live Scryfall tools.",
                     mana_curve=mana_curve,
@@ -1300,85 +1408,6 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             }
         )
 
-    if settings.openai_enabled:
-        try:
-            model_card_context = [
-                item
-                for item in card_context
-                if _is_candidate_nonland_document(item, request.format, requested_colors)
-            ]
-            model_result = await OpenAIDeckBuilder(settings).generate(
-                request=request,
-                card_context=model_card_context,
-                rules_context=rules_context,
-                strategy_context=strategy_context,
-                land_guidance={
-                    "minimum": 32 if request.format == Format.commander else 18,
-                    "default": _target_land_count(request, []),
-                    "maximum": 42 if request.format == Format.commander else 28,
-                },
-            )
-            allowed_names = {
-                *(item.metadata.get("name") or item.title for item in model_card_context),
-                *COLOR_TO_BASIC_LAND.values(),
-                "Wastes",
-            }
-            model_cards = _coerce_model_cards(model_result.get("cards", []), allowed_names)
-            if model_cards:
-                model_cards = _finalize_deck_cards(model_cards, request, context)
-                validation = _validate_deck_with_mcp(model_cards, request.format, mcp_server)
-                if not validation.is_valid:
-                    raise ValueError(f"OpenAI deck failed validation: {validation.errors}")
-                agent_steps.append(
-                    {
-                        "label": "OpenAI selection",
-                        "detail": "Model received retrieved strategy/rules context and live Scryfall candidate context.",
-                    }
-                )
-                agent_steps.append(
-                    {
-                        "label": "Deck validation",
-                        "detail": (
-                            f"Deterministic skills finalized {sum(card['count'] for card in model_cards)} "
-                            f"cards and validation returned {len(validation.errors)} errors."
-                        ),
-                    }
-                )
-                model_cards = await _enrich_prices_with_scryfall(
-                    cards=model_cards,
-                    mcp_server=mcp_server,
-                    steps=agent_steps,
-                )
-                mana_curve = calculate_mana_curve(model_cards)
-                response_context = _response_context_documents(
-                    card_context=card_context,
-                    rules_context=rules_context,
-                    strategy_context=strategy_context,
-                    mtg_format=request.format,
-                    requested_colors=requested_colors,
-                )
-                return DeckResponse(
-                    title=model_result.get("title") or f"{request.format.value.title()} Deck Draft",
-                    format=request.format,
-                    cards=model_cards,
-                    explanation=model_result.get("explanation")
-                    or "Generated from retrieved cards, rules, and strategy context.",
-                    mana_curve=mana_curve,
-                    validation=validation,
-                    retrieved_context=[f"{item.title} ({item.source})" for item in response_context],
-                    agent_steps=agent_steps,
-                    generation_mode=f"openai:{settings.openai_model}",
-                )
-        except Exception as exc:
-            logger.warning(
-                "OpenAI deck generation failed; falling back to deterministic draft",
-                extra=log_extra(error=str(exc)),
-            )
-            agent_steps = _agent_steps_with_fallback(
-                agent_steps,
-                f"OpenAI generation failed, so deterministic assembly continued: {exc}",
-            )
-
     if not cards:
         cards = [
             {"name": "Lightning Bolt", "count": 4, "role": "efficient interaction", "mana_value": 1},
@@ -1404,6 +1433,12 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         mcp_server=mcp_server,
         steps=agent_steps,
     )
+    sideboard = _build_sideboard_with_steps(
+        request=request,
+        documents=card_context,
+        main_deck=cards,
+        steps=agent_steps,
+    )
     mana_curve = calculate_mana_curve(cards)
     response_context = _response_context_documents(
         card_context=card_context,
@@ -1417,6 +1452,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         title=f"{request.format.value.title()} {request.playstyle.title() or 'Deck'} Draft",
         format=request.format,
         cards=cards,
+        sideboard=sideboard,
         explanation=(
             "This draft is assembled from requested cards, live Scryfall search results, and "
             "local strategy/rules context. The placeholder list is only used when live card "

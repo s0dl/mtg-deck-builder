@@ -1,5 +1,6 @@
 from app.api.decks import (
     _card_query_from_context,
+    _build_sideboard_cards,
     _cards_from_retrieved_documents,
     _ensure_minimum_deck_size,
     _filter_strategy_documents,
@@ -8,6 +9,7 @@ from app.api.decks import (
     _response_context_documents,
     _selected_cards_from_agent_result,
     _shape_deck_size,
+    _supports_sideboard,
     _scryfall_candidate_queries,
     _strategy_query,
     _target_land_count,
@@ -242,6 +244,40 @@ def test_finalize_deck_cards_prefers_available_nonbasic_lands_before_basics() ->
     assert next(card for card in finalized if card["name"] == "Shivan Reef")["count"] == 4
     assert next(card for card in finalized if card["name"] == "Steam Vents")["count"] == 4
     assert sum(card["count"] for card in finalized if card["role"] == "mana source") < 21
+
+
+def test_build_sideboard_cards_for_constructed_formats() -> None:
+    documents = [
+        make_card_document(
+            f"Sideboard Card {index}",
+            type_line="Instant",
+            colors=["R"],
+            color_identity=["R"],
+        )
+        for index in range(8)
+    ]
+    request = DeckRequest(format=Format.modern, colors=["R"], playstyle="tempo")
+
+    sideboard = _build_sideboard_cards(
+        request=request,
+        documents=documents,
+        main_deck=[{"name": "Lightning Bolt", "count": 4, "role": "interaction"}],
+    )
+
+    assert _supports_sideboard(Format.modern)
+    assert sum(card["count"] for card in sideboard) == 15
+    assert len(sideboard) == 8
+
+
+def test_build_sideboard_cards_skips_commander() -> None:
+    sideboard = _build_sideboard_cards(
+        request=DeckRequest(format=Format.commander, colors=["R"]),
+        documents=[make_card_document("Abrade", colors=["R"], color_identity=["R"])],
+        main_deck=[],
+    )
+
+    assert not _supports_sideboard(Format.commander)
+    assert sideboard == []
 
 
 def test_selected_cards_from_agent_result_preserves_variable_counts() -> None:

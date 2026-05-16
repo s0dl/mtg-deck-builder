@@ -6,6 +6,7 @@ from app.core.config import Settings
 from app.models.deck import DeckRequest, Format
 from app.skills.deck_workflow import (
     PHASE_ALLOWED_TOOLS,
+    request_constraints_payload,
     workflow_instructions,
     workflow_payload,
     workflow_tool_order,
@@ -15,6 +16,17 @@ from app.skills.deck_workflow import (
 class FakeTools:
     def tool_signatures(self, names: tuple[str, ...] | list[str]) -> list[str]:
         return [f"{name}()" for name in names]
+
+    async def lookup_card(self, name: str) -> dict[str, Any]:
+        return {
+            "title": name,
+            "content": f"{name} card text",
+            "source": "scryfall_live",
+            "metadata": {"name": name, "type_line": "Creature", "legalities": {"modern": "legal"}},
+        }
+
+    async def search_cards_scryfall(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        return []
 
 
 def test_workflow_orders_rag_before_live_scryfall_and_validation() -> None:
@@ -45,6 +57,21 @@ def test_workflow_instructions_bind_the_model_to_one_phase() -> None:
     assert "Do not ask for tools outside the current workflow phase." in instructions
 
 
+def test_request_constraints_payload_exposes_must_include_and_avoid_terms() -> None:
+    request = DeckRequest(
+        format=Format.modern,
+        must_include=["Slickshot Show-Off"],
+        avoid=["Ragavan, Nimble Pilferer", "fetch lands"],
+    )
+
+    payload = request_constraints_payload(request)
+
+    assert payload["must_include"] == ["Slickshot Show-Off"]
+    assert payload["avoid"] == ["Ragavan, Nimble Pilferer", "fetch lands"]
+    assert "Must include these cards" in payload["instructions"]
+    assert "Avoid these card names" in payload["instructions"]
+
+
 def test_openai_rag_planner_receives_workflow_skill(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -73,6 +100,8 @@ def test_openai_rag_planner_receives_workflow_skill(monkeypatch) -> None:
                 colors=["U", "R"],
                 playstyle="tempo",
                 strategy="prowess",
+                must_include=["Slickshot Show-Off"],
+                avoid=["Ragavan, Nimble Pilferer"],
             ),
             rules_context=[],
             strategy_context=[],
@@ -81,5 +110,32 @@ def test_openai_rag_planner_receives_workflow_skill(monkeypatch) -> None:
 
     assert result["strategy_queries"] == ["modern izzet prowess"]
     assert "deck_builder_workflow skill" in captured["instructions"]
+    assert "Slickshot Show-Off" in captured["instructions"]
     assert captured["input_payload"]["deck_workflow"]["current_phase"] == "rag_planning"
+    assert captured["input_payload"]["request_constraints"]["must_include"] == ["Slickshot Show-Off"]
+    assert captured["input_payload"]["request_constraints"]["avoid"] == ["Ragavan, Nimble Pilferer"]
     assert "search_cards_scryfall" not in captured["input_payload"]["deck_workflow"]["phase_allowed_tools"]
+
+
+def test_agent_scryfall_phase_looks_up_must_include_cards() -> None:
+    agent = OpenAIDeckAgent(
+        settings=Settings(OPENAI_API_KEY="test-key"),
+        tools=FakeTools(),  # type: ignore[arg-type]
+    )
+    steps: list[dict[str, str]] = []
+
+    results = asyncio.run(
+        agent._run_scryfall_tool_plan(
+            request=DeckRequest(format=Format.modern, must_include=["Slickshot Show-Off"]),
+            plan={"scryfall_queries": []},
+            rag_context={"strategy": [], "meta_decks": [], "rules": []},
+            steps=steps,
+            rag_results={"strategy": [], "meta_decks": [], "rules": []},
+        )
+    )
+
+    assert [payload["title"] for payload in results["lookups"]] == ["Slickshot Show-Off"]
+    assert steps[0] == {
+        "label": "Requested card lookup",
+        "detail": "Slickshot Show-Off -> live Scryfall candidate",
+    }

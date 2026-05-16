@@ -16,7 +16,6 @@ Python FastAPI service for MTG Deck Builder Agent.
 - [Agent Module](../docs/backend/modules/agent.md)
 - [API Module](../docs/backend/modules/api.md)
 - [Core Module](../docs/backend/modules/core.md)
-- [LLM Module](../docs/backend/modules/llm.md)
 - [MCP Module](../docs/backend/modules/mcp.md)
 - [Models Module](../docs/backend/modules/models.md)
 - [RAG Module](../docs/backend/modules/rag.md)

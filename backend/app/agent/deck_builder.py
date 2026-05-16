@@ -8,15 +8,20 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
+from app.agent.context import document_to_model_context
 from app.agent.tools import DeckAgentTools
 from app.core.config import Settings
 from app.core.logging import log_extra
 from app.core.openai_agents import run_structured_openai_agent
-from app.llm.deck_builder import _document_to_model_context
 from app.models.deck import DeckRequest
 from app.rag.retriever import RetrievedDocument
 from app.skills.deck_evaluation import rank_candidate_cards
-from app.skills.deck_workflow import workflow_instructions, workflow_payload
+from app.skills.deck_workflow import (
+    request_constraints_instructions,
+    request_constraints_payload,
+    workflow_instructions,
+    workflow_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +256,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         "First, plan only the extra RAG tool calls needed before deck construction. "
                         "Use strategy, meta-deck, and rules searches to gather context for the deck. "
                         "Do not plan any live Scryfall card searches yet."
+                        "\n\n"
+                        + request_constraints_instructions(request)
                     ),
                 },
                 {
@@ -258,15 +265,16 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "request_constraints": request_constraints_payload(request),
                             "deck_workflow": workflow_payload("rag_planning"),
                             "available_tools": self.tools.tool_signatures(
                                 ("search_strategy", "search_meta_decks", "search_rules")
                             ),
                             "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rules_context[:8]
+                                document_to_model_context(document) for document in rules_context[:8]
                             ],
                             "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in strategy_context[:10]
+                                document_to_model_context(document) for document in strategy_context[:10]
                             ],
                         },
                         separators=(",", ":"),
@@ -305,6 +313,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         "Now plan only live Scryfall searches to find cards that match the retrieved "
                         "documents. Use the documents at hand to name relevant archetype pieces, "
                         "staples, mana bases, and support cards."
+                        "\n\n"
+                        + request_constraints_instructions(request)
                     ),
                 },
                 {
@@ -312,16 +322,17 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "request_constraints": request_constraints_payload(request),
                             "deck_workflow": workflow_payload("scryfall_planning"),
                             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
                             "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in rag_context["strategy"][:12]
+                                document_to_model_context(document) for document in rag_context["strategy"][:12]
                             ],
                             "retrieved_meta_deck_context": [
-                                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                                document_to_model_context(document) for document in rag_context["meta_decks"][:12]
                             ],
                             "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rag_context["rules"][:8]
+                                document_to_model_context(document) for document in rag_context["rules"][:8]
                             ],
                         },
                         separators=(",", ":"),
@@ -403,6 +414,15 @@ class OllamaDeckAgent(AbstractDeckAgent):
             "lookups": [],
         }
 
+        for name in request.must_include:
+            try:
+                document = await self.tools.lookup_card(name=name)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Requested card lookup failed", "detail": f"{name} -> {exc}"})
+                continue
+            results["lookups"].append(document)
+            steps.append({"label": "Requested card lookup", "detail": f"{name} -> live Scryfall candidate"})
+
         for query in _string_list(plan.get("scryfall_queries"))[:6]:
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=20)
@@ -465,6 +485,8 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         "budget_usd as a ceiling for power, not as a request for the cheapest possible "
                         "deck. For high budgets, prefer meta-proven staples and premium mana bases if "
                         "they improve the deck while staying under budget."
+                        "\n\n"
+                        + request_constraints_instructions(request)
                     ),
                 },
                 {
@@ -472,15 +494,16 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": json.dumps(
                         {
                             "request": request.model_dump(mode="json"),
+                            "request_constraints": request_constraints_payload(request),
                             "deck_workflow": workflow_payload("card_selection"),
                             "budget_guidance": _budget_guidance(request),
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
                             "retrieved_rules_context": [
-                                _document_to_model_context(document) for document in rules_context[:6]
+                                document_to_model_context(document) for document in rules_context[:6]
                             ],
                             "retrieved_strategy_context": [
-                                _document_to_model_context(document) for document in strategy_context[:8]
+                                document_to_model_context(document) for document in strategy_context[:8]
                             ],
                             "retrieved_meta_deck_context": [
                                 payload for payload in tool_results.get("meta_decks", [])[:8] if isinstance(payload, dict)
@@ -737,7 +760,7 @@ def _candidate_payloads(
         )
 
     for document in card_context:
-        add_payload(_document_to_model_context(document))
+        add_payload(document_to_model_context(document))
 
     for bucket in ("lookups", "cards"):
         for payload in tool_results.get(bucket, []):
@@ -764,18 +787,21 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "First, plan only the extra RAG tool calls needed before deck construction. "
             "Use strategy, meta-deck, and rules searches to gather context for the deck. "
             "Do not plan any live Scryfall card searches yet."
+            "\n\n"
+            + request_constraints_instructions(request)
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "request_constraints": request_constraints_payload(request),
             "deck_workflow": workflow_payload("rag_planning"),
             "available_tools": self.tools.tool_signatures(
                 ("search_strategy", "search_meta_decks", "search_rules")
             ),
             "retrieved_rules_context": [
-                _document_to_model_context(document) for document in rules_context[:8]
+                document_to_model_context(document) for document in rules_context[:8]
             ],
             "retrieved_strategy_context": [
-                _document_to_model_context(document) for document in strategy_context[:12]
+                document_to_model_context(document) for document in strategy_context[:12]
             ],
         }
         logger.info("OpenAI RAG planning started", extra=log_extra(model=self.settings.openai_model))
@@ -807,19 +833,22 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "Now plan only live Scryfall searches to find cards that match the retrieved "
             "documents. Use the documents at hand to name relevant archetype pieces, "
             "staples, mana bases, and support cards."
+            "\n\n"
+            + request_constraints_instructions(request)
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "request_constraints": request_constraints_payload(request),
             "deck_workflow": workflow_payload("scryfall_planning"),
             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
             "retrieved_strategy_context": [
-                _document_to_model_context(document) for document in rag_context["strategy"][:12]
+                document_to_model_context(document) for document in rag_context["strategy"][:12]
             ],
             "retrieved_meta_deck_context": [
-                _document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                document_to_model_context(document) for document in rag_context["meta_decks"][:12]
             ],
             "retrieved_rules_context": [
-                _document_to_model_context(document) for document in rag_context["rules"][:8]
+                document_to_model_context(document) for document in rag_context["rules"][:8]
             ],
         }
         logger.info("OpenAI live Scryfall planning started", extra=log_extra(model=self.settings.openai_model))
@@ -880,6 +909,15 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "lookups": [],
         }
 
+        for name in request.must_include:
+            try:
+                document = await self.tools.lookup_card(name=name)
+            except httpx.HTTPError as exc:
+                steps.append({"label": "Requested card lookup failed", "detail": f"{name} -> {exc}"})
+                continue
+            results["lookups"].append(document)
+            steps.append({"label": "Requested card lookup", "detail": f"{name} -> live Scryfall candidate"})
+
         for query in _string_list(plan.get("scryfall_queries"))[:8]:
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=24)
@@ -925,18 +963,21 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "as a request for the cheapest possible deck. For high budgets, prefer "
             "meta-proven staples and premium mana bases if they improve the deck while "
             "staying under budget."
+            "\n\n"
+            + request_constraints_instructions(request)
         )
         input_payload = {
             "request": request.model_dump(mode="json"),
+            "request_constraints": request_constraints_payload(request),
             "deck_workflow": workflow_payload("card_selection"),
             "budget_guidance": _budget_guidance(request),
             "land_guidance": land_guidance,
             "candidate_cards": candidates,
             "retrieved_rules_context": [
-                _document_to_model_context(document) for document in rules_context[:12]
+                document_to_model_context(document) for document in rules_context[:12]
             ],
             "retrieved_strategy_context": [
-                _document_to_model_context(document) for document in strategy_context[:18]
+                document_to_model_context(document) for document in strategy_context[:18]
             ],
             "retrieved_meta_deck_context": [
                 payload for payload in tool_results.get("meta_decks", [])[:12] if isinstance(payload, dict)

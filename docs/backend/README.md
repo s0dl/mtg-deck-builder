@@ -8,7 +8,6 @@ The backend is a FastAPI service that owns deck generation, agent orchestration,
 - [Agent Module](modules/agent.md)
 - [API Module](modules/api.md)
 - [Core Module](modules/core.md)
-- [LLM Module](modules/llm.md)
 - [MCP Module](modules/mcp.md)
 - [Models Module](modules/models.md)
 - [RAG Module](modules/rag.md)

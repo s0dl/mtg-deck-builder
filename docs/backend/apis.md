@@ -60,15 +60,15 @@ Request fields:
 - `colors` - preferred color letters such as `U` and `R`.
 - `playstyle` - short archetype descriptor such as `aggro`, `tempo`, `control`, `combo`, `midrange`, or `ramp`.
 - `strategy` - natural-language deck goal.
-- `must_include` - card names to seed into searches and final selection when legal.
-- `avoid` - card names or terms to avoid where supported.
+- `must_include` - card names sent explicitly to the model as requested inclusions and used to seed searches when legal.
+- `avoid` - card names or terms sent explicitly to the model as exclusions and filtered where supported.
 
 Response fields:
 
 - `title` - generated deck name.
 - `format` - response format.
 - `cards` - main deck card rows with `name`, `count`, `role`, and optional `estimated_price_usd`.
-- `sideboard` - sideboard card rows. This is currently usually empty.
+- `sideboard` - sideboard card rows. Constructed formats return up to 15 sideboard cards when live candidate context is available.
 - `explanation` - model or fallback explanation.
 - `mana_curve` - count by mana value.
 - `validation` - deterministic validity, errors, and warnings.
@@ -78,9 +78,8 @@ Response fields:
 
 Generation modes currently include:
 
-- `openai_agent` - OpenAI agent planned tool calls and selected cards.
-- `openai` - legacy OpenAI structured deck builder path.
-- `ollama_agent` - local Ollama agent path.
+- `openai-agent:<model>` - OpenAI agent planned tool calls and selected cards.
+- `ollama:<model>` - local Ollama agent path.
 - `deterministic` - backend fallback assembly.
 
 The backend finalizes all paths by merging duplicate card rows, trimming oversized responses, adding basic lands to the target size, calculating mana curve, and running deterministic validation.
