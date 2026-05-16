@@ -19,3 +19,5 @@ dist/
 
 mtg_deck_builder_backend.egg-info
 build
+
+data
