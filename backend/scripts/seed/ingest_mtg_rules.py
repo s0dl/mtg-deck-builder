@@ -12,6 +12,7 @@ from app.core.logging import configure_logging, log_extra
 from app.rag.embeddings import get_embedding_provider
 from app.rag.ingestion import load_comprehensive_rules_file
 from app.rag.repository import RagRepository
+from scripts.seed.preview import log_document_samples
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--batch-size", type=int, help="Embedding/upsert batch size.")
     parser.add_argument("--batch-delay-seconds", type=float, help="Delay between embedding batches.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Load and count documents without embedding or writing to the database.",
+    )
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=3,
+        help="Number of prepared documents to show during a dry run.",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +60,14 @@ def main() -> None:
     logger.info("Loading MTG comprehensive rules file", extra=log_extra(path=str(args.path)))
     documents = load_comprehensive_rules_file(args.path)
     logger.info("Prepared MTG rules RAG documents", extra=log_extra(document_count=len(documents)))
+    if args.dry_run:
+        log_document_samples(logger, documents, sample_size=args.sample_size)
+        logger.info(
+            "Dry run completed; no MTG rules RAG documents were imported",
+            extra=log_extra(document_count=len(documents), path=str(args.path)),
+        )
+        return
+
     with SessionLocal() as session:
         repository = RagRepository(session, get_embedding_provider())
         count = repository.upsert_many(
