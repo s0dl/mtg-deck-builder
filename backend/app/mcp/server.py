@@ -70,6 +70,11 @@ GENERIC_QUERY_TERMS = {
 }
 
 FORMAT_VALUES = [item.value for item in Format]
+RAG_DOCUMENT_TOOL_MAX_LIMIT = 1_000
+STRATEGY_SEARCH_DEFAULT_LIMIT = 40
+STRATEGY_SEARCH_MAX_LIMIT = 100
+META_DECK_SEARCH_DEFAULT_LIMIT = 40
+RULES_SEARCH_DEFAULT_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -181,8 +186,8 @@ class DeckBuilderMcpServer:
     def _tool_search_strategy(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
         query = _string_arg(arguments, "query")
         mtg_format = _format_arg(arguments.get("mtg_format") or arguments.get("format"))
-        limit = _int_arg(arguments, "limit", 8)
-        article_limit = max(1, limit // 2)
+        limit = min(_int_arg(arguments, "limit", STRATEGY_SEARCH_DEFAULT_LIMIT), STRATEGY_SEARCH_MAX_LIMIT)
+        article_limit = max(1, (limit * 3) // 4)
         meta_limit = max(1, limit - article_limit)
         documents = [
             *self._search_strategy_source(
@@ -207,7 +212,10 @@ class DeckBuilderMcpServer:
                 query=_string_arg(arguments, "query"),
                 source="mtgdecks_meta_decks",
                 mtg_format=_format_arg(arguments.get("mtg_format") or arguments.get("format")),
-                limit=_int_arg(arguments, "limit", 8),
+                limit=min(
+                    _int_arg(arguments, "limit", META_DECK_SEARCH_DEFAULT_LIMIT),
+                    STRATEGY_SEARCH_MAX_LIMIT,
+                ),
             )
         ]
 
@@ -233,7 +241,7 @@ class DeckBuilderMcpServer:
             document_payload(document)
             for document in self._require_retriever().search_text(
                 query=_string_arg(arguments, "intent"),
-                limit=_int_arg(arguments, "limit", 6),
+                limit=min(_int_arg(arguments, "limit", RULES_SEARCH_DEFAULT_LIMIT), STRATEGY_SEARCH_MAX_LIMIT),
                 source="mtg_comprehensive_rules",
             )
         ]
@@ -318,7 +326,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                 "required": ["query"],
                 "properties": {
                     "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": RAG_DOCUMENT_TOOL_MAX_LIMIT},
                     "source": {"type": "string"},
                     "metadata_filters": {
                         "type": "object",
@@ -335,7 +343,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                 "required": ["query"],
                 "properties": {
                     "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": RAG_DOCUMENT_TOOL_MAX_LIMIT},
                     "source": {"type": "string"},
                 },
             },
@@ -350,7 +358,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                     "source": {"type": "string"},
                     "metadata_key": {"type": "string"},
                     "prefixes": {"type": "array", "items": {"type": "string"}},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": RAG_DOCUMENT_TOOL_MAX_LIMIT},
                 },
             },
         ),
@@ -363,7 +371,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                 "properties": {
                     "query": {"type": "string"},
                     "mtg_format": {"type": "string", "enum": FORMAT_VALUES},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": STRATEGY_SEARCH_MAX_LIMIT},
                 },
             },
         ),
@@ -376,7 +384,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                 "properties": {
                     "query": {"type": "string"},
                     "mtg_format": {"type": "string", "enum": FORMAT_VALUES},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": STRATEGY_SEARCH_MAX_LIMIT},
                 },
             },
         ),
@@ -388,7 +396,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
                 "required": ["intent"],
                 "properties": {
                     "intent": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": STRATEGY_SEARCH_MAX_LIMIT},
                 },
             },
         ),

@@ -13,6 +13,7 @@ class FakeRetriever:
         self.documents = documents
         self.text_documents = text_documents if text_documents is not None else []
         self.last_limit: int | None = None
+        self.text_limits_by_source: dict[str | None, list[int]] = {}
 
     def search(self, query: str, limit: int = 5, source: str | None = None) -> list[RetrievedDocument]:
         self.last_limit = limit
@@ -25,6 +26,7 @@ class FakeRetriever:
         source: str | None = None,
         metadata_filters: dict[str, list[str]] | None = None,
     ):
+        self.text_limits_by_source.setdefault(source, []).append(limit)
         documents = [document for document in self.text_documents if source is None or document.source == source]
         if metadata_filters:
             for key, values in metadata_filters.items():
@@ -151,6 +153,16 @@ def test_search_strategy_includes_meta_deck_documents() -> None:
     assert [result["source"] for result in results] == ["mtgdecks_articles", "mtgdecks_meta_decks"]
 
 
+def test_search_strategy_requests_larger_article_context_by_default() -> None:
+    retriever = FakeRetriever([], text_documents=[])
+    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+
+    tools.search_strategy(query="modern izzet prowess", mtg_format=Format.modern)
+
+    assert retriever.text_limits_by_source["mtgdecks_articles"] == [30]
+    assert retriever.text_limits_by_source["mtgdecks_meta_decks"] == [10]
+
+
 def test_search_card_corpus_combines_vector_and_text_results() -> None:
     vector_card = card_document("Monastery Swiftspear", colors=["R"], content="prowess haste")
     text_card = card_document("Slickshot Show-Off", colors=["R"], content="flying haste prowess")
@@ -165,6 +177,50 @@ def test_search_card_corpus_combines_vector_and_text_results() -> None:
     )
 
     assert {result["title"] for result in results} == {"Monastery Swiftspear", "Slickshot Show-Off"}
+
+
+def test_evaluate_deck_candidates_scores_request_fit() -> None:
+    tools = DeckAgentTools(retriever=FakeRetriever([]), scryfall=None)  # type: ignore[arg-type]
+
+    results = tools.evaluate_deck_candidates(
+        [
+            {
+                "name": "Monastery Swiftspear",
+                "type_line": "Creature - Human Monk",
+                "mana_value": 1,
+                "colors": ["R"],
+                "color_identity": ["R"],
+                "legalities": {"modern": "legal"},
+                "content": "prowess haste",
+            },
+            {
+                "name": "Ponder",
+                "type_line": "Sorcery",
+                "colors": ["U"],
+                "color_identity": ["U"],
+                "legalities": {"modern": "not_legal"},
+            },
+        ],
+        DeckRequest(format=Format.modern, colors=["R"], playstyle="aggro", strategy="prowess"),
+    )
+
+    assert results[0]["name"] == "Monastery Swiftspear"
+    assert results[0]["is_playable"] is True
+    assert results[-1]["name"] == "Ponder"
+    assert results[-1]["is_playable"] is False
+
+
+def test_curate_context_notes_dedupes_and_limits_documents() -> None:
+    tools = DeckAgentTools(retriever=FakeRetriever([]), scryfall=None)  # type: ignore[arg-type]
+    documents = [
+        {"title": "Guide", "source": "mtgdecks_articles", "content": " play cheap threats and burn "},
+        {"title": "Guide", "source": "mtgdecks_articles", "content": "play cheap threats and burn"},
+        {"title": "Rules", "source": "mtg_comprehensive_rules", "content": "Deck size minimums apply."},
+    ]
+
+    notes = tools.curate_context_notes(documents, max_notes=1)
+
+    assert notes == ["Guide (mtgdecks_articles): play cheap threats and burn"]
 
 
 def test_mcp_server_lists_all_agent_tool_categories() -> None:

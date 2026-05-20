@@ -35,6 +35,10 @@ def test_load_mtgdecks_meta_decks_file_builds_rag_documents(tmp_path: Path) -> N
     assert documents[0].metadata["format"] == "standard"
     assert documents[0].metadata["archetype"] == "Izzet Prowess"
     assert documents[0].metadata["metagame_share"] == 12.5
+    assert documents[0].metadata["top_deck_cards"] == [
+        {"count": 4, "name": "Monastery Swiftspear"},
+        {"count": 4, "name": "Sleight of Hand"},
+    ]
     assert "Monastery Swiftspear" in documents[0].content
     assert "Sleight of Hand" in documents[0].metadata["card_names"]
 

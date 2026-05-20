@@ -32,17 +32,20 @@ def test_run_structured_openai_agent_uses_agents_sdk(monkeypatch) -> None:
             instructions: str,
             model: str,
             output_type: type[BaseModel],
+            tools: list[object],
         ) -> None:
             self.name = name
             self.instructions = instructions
             self.model = model
             self.output_type = output_type
+            self.tools = tools
             calls["agent"] = self
 
     class FakeRunner:
         @staticmethod
-        async def run(agent: FakeAgent, input: str) -> SimpleNamespace:
+        async def run(agent: FakeAgent, input: str, max_turns: int | None = None) -> SimpleNamespace:
             calls["input"] = json.loads(input)
+            calls["max_turns"] = max_turns
             return SimpleNamespace(final_output=agent.output_type(title="Deck"))
 
     fake_agents = ModuleType("agents")
@@ -70,7 +73,9 @@ def test_run_structured_openai_agent_uses_agents_sdk(monkeypatch) -> None:
     assert isinstance(agent, FakeAgent)
     assert agent.name == "MTG deck builder"
     assert agent.model == "gpt-test"
+    assert agent.tools == []
     assert calls["input"] == {"request": {"format": "modern"}}
+    assert calls["max_turns"] is None
     assert result == {"title": "Deck"}
 
 

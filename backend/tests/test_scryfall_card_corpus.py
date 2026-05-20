@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from app.rag.ingestion import load_scryfall_card_corpus_file
-from scripts.download_scryfall_card_corpus import default_cards_download_uri
+from scripts.scrapers.download_scryfall_card_corpus import default_cards_download_uri
 
 
 def test_default_cards_download_uri_reads_bulk_index() -> None:
@@ -34,6 +34,7 @@ def test_load_scryfall_card_corpus_file_builds_card_text_documents(tmp_path: Pat
                     "cmc": 1,
                     "keywords": [],
                     "legalities": {"modern": "legal"},
+                    "prices": {"usd": "0.99", "usd_foil": None, "usd_etched": None},
                     "layout": "normal",
                     "games": ["paper"],
                 },
@@ -55,7 +56,10 @@ def test_load_scryfall_card_corpus_file_builds_card_text_documents(tmp_path: Pat
     assert documents[0].source_id == "oracle-1:0"
     assert documents[0].metadata["kind"] == "card_text"
     assert documents[0].metadata["name"] == "Lightning Bolt"
+    assert documents[0].metadata["prices"]["usd"] == "0.99"
+    assert documents[0].metadata["estimated_price_usd"] == 0.99
     assert "Mana value: 1" in documents[0].content
     assert "Color identity: R" in documents[0].content
     assert "Legal formats: modern" in documents[0].content
+    assert "Price USD: 0.99" in documents[0].content
     assert "3 damage" in documents[0].content

@@ -25,6 +25,16 @@ from app.skills.deck_workflow import (
 
 logger = logging.getLogger(__name__)
 
+INITIAL_RULE_CONTEXT_LIMIT = 12
+INITIAL_STRATEGY_CONTEXT_LIMIT = 24
+PLANNED_STRATEGY_SEARCH_LIMIT = 40
+PLANNED_META_DECK_SEARCH_LIMIT = 40
+PLANNED_RULE_SEARCH_LIMIT = 20
+SCRYFALL_PLAN_STRATEGY_CONTEXT_LIMIT = 30
+SCRYFALL_PLAN_META_CONTEXT_LIMIT = 20
+SELECTION_STRATEGY_CONTEXT_LIMIT = 24
+SELECTION_META_CONTEXT_LIMIT = 16
+
 AGENT_RAG_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -93,6 +103,14 @@ class AgentSelectionOutput(BaseModel):
     title: str
     explanation: str
     selected_cards: list[AgentSelectedCardOutput] = Field(default_factory=list)
+
+
+class AgenticDeckOutput(BaseModel):
+    title: str
+    explanation: str
+    selected_cards: list[AgentSelectedCardOutput] = Field(default_factory=list)
+    context_notes: list[str] = Field(default_factory=list)
+    validation_notes: list[str] = Field(default_factory=list)
 
 
 class AbstractDeckAgent(ABC):
@@ -271,10 +289,12 @@ class OllamaDeckAgent(AbstractDeckAgent):
                                 ("search_strategy", "search_meta_decks", "search_rules")
                             ),
                             "retrieved_rules_context": [
-                                document_to_model_context(document) for document in rules_context[:8]
+                                document_to_model_context(document)
+                                for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
                             ],
                             "retrieved_strategy_context": [
-                                document_to_model_context(document) for document in strategy_context[:10]
+                                document_to_model_context(document)
+                                for document in strategy_context[:INITIAL_STRATEGY_CONTEXT_LIMIT]
                             ],
                         },
                         separators=(",", ":"),
@@ -326,13 +346,16 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "deck_workflow": workflow_payload("scryfall_planning"),
                             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
                             "retrieved_strategy_context": [
-                                document_to_model_context(document) for document in rag_context["strategy"][:12]
+                                document_to_model_context(document)
+                                for document in rag_context["strategy"][:SCRYFALL_PLAN_STRATEGY_CONTEXT_LIMIT]
                             ],
                             "retrieved_meta_deck_context": [
-                                document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                                document_to_model_context(document)
+                                for document in rag_context["meta_decks"][:SCRYFALL_PLAN_META_CONTEXT_LIMIT]
                             ],
                             "retrieved_rules_context": [
-                                document_to_model_context(document) for document in rag_context["rules"][:8]
+                                document_to_model_context(document)
+                                for document in rag_context["rules"][:INITIAL_RULE_CONTEXT_LIMIT]
                             ],
                         },
                         separators=(",", ":"),
@@ -367,7 +390,11 @@ class OllamaDeckAgent(AbstractDeckAgent):
         }
 
         for query in _string_list(plan.get("strategy_queries"))[:3]:
-            documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=6)
+            documents = self.tools.search_strategy(
+                query=query,
+                mtg_format=request.format,
+                limit=PLANNED_STRATEGY_SEARCH_LIMIT,
+            )
             results["strategy"].extend(documents)
             steps.append(
                 {
@@ -377,7 +404,11 @@ class OllamaDeckAgent(AbstractDeckAgent):
             )
 
         for query in _string_list(plan.get("meta_deck_queries"))[:3]:
-            documents = self.tools.search_meta_decks(query=query, mtg_format=request.format, limit=8)
+            documents = self.tools.search_meta_decks(
+                query=query,
+                mtg_format=request.format,
+                limit=PLANNED_META_DECK_SEARCH_LIMIT,
+            )
             results["meta_decks"].extend(documents)
             steps.append(
                 {
@@ -387,7 +418,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
             )
 
         for query in _string_list(plan.get("rules_queries"))[:2]:
-            documents = self.tools.search_rules(intent=query, limit=5)
+            documents = self.tools.search_rules(intent=query, limit=PLANNED_RULE_SEARCH_LIMIT)
             results["rules"].extend(documents)
             steps.append(
                 {
@@ -500,13 +531,17 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
                             "retrieved_rules_context": [
-                                document_to_model_context(document) for document in rules_context[:6]
+                                document_to_model_context(document)
+                                for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
                             ],
                             "retrieved_strategy_context": [
-                                document_to_model_context(document) for document in strategy_context[:8]
+                                document_to_model_context(document)
+                                for document in strategy_context[:SELECTION_STRATEGY_CONTEXT_LIMIT]
                             ],
                             "retrieved_meta_deck_context": [
-                                payload for payload in tool_results.get("meta_decks", [])[:8] if isinstance(payload, dict)
+                                payload
+                                for payload in tool_results.get("meta_decks", [])[:SELECTION_META_CONTEXT_LIMIT]
+                                if isinstance(payload, dict)
                             ],
                             "instructions": (
                                 "Pick 8 to 18 card names that best fit the request. Include useful "
@@ -555,6 +590,16 @@ def _loads_json_content(response_json: dict[str, Any]) -> dict[str, Any]:
         if start < 0 or end <= start:
             raise
         return json.loads(content[start : end + 1])
+
+
+def _loads_json_array(value: str, label: str) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Agent tool expected {label} as a JSON array.") from exc
+    if not isinstance(payload, list):
+        raise ValueError(f"Agent tool expected {label} as a JSON array.")
+    return [item for item in payload if isinstance(item, dict)]
 
 
 def _string_list(value: Any) -> list[str]:
@@ -775,6 +820,187 @@ class OpenAIDeckAgent(AbstractDeckAgent):
     def thought_label(self) -> str:
         return "OpenAI thought"
 
+    async def generate(
+        self,
+        request: DeckRequest,
+        card_context: list[RetrievedDocument],
+        rules_context: list[RetrievedDocument],
+        strategy_context: list[RetrievedDocument],
+        land_guidance: dict[str, int],
+    ) -> dict[str, Any]:
+        try:
+            from agents import function_tool
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenAI Agents SDK is required for OpenAI generation. "
+                "Install backend dependencies so the 'openai-agents' package is available."
+            ) from exc
+
+        steps: list[dict[str, str]] = [
+            {
+                "label": "OpenAI manager agent",
+                "detail": (
+                    "Manager owns the RAG, Scryfall, candidate evaluation, and validation tool loop; "
+                    "deterministic backend finalization still enforces deck size, lands, copy limits, and legality."
+                ),
+            },
+            {
+                "label": "Initial RAG context",
+                "detail": (
+                    f"Seeded manager with {len(strategy_context)} strategy documents, "
+                    f"{len(rules_context)} rules documents, and {len(card_context)} initial live cards."
+                ),
+            },
+        ]
+        tool_results: dict[str, Any] = {
+            "strategy": [],
+            "meta_decks": [],
+            "rules": [],
+            "cards": [],
+            "lookups": [],
+            "evaluations": [],
+            "validations": [],
+        }
+
+        @function_tool
+        def search_strategy(query: str, limit: int = 40) -> list[dict[str, Any]]:
+            """Search strategy articles and nearby meta-deck context for this request's format."""
+            documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=limit)
+            tool_results["strategy"].extend(documents)
+            steps.append({"label": "Agent strategy search", "detail": f"{query} -> {len(documents)} documents"})
+            return documents
+
+        @function_tool
+        def search_meta_decks(query: str, limit: int = 40) -> list[dict[str, Any]]:
+            """Search ingested tournament/meta decklists for archetype and card-package evidence."""
+            documents = self.tools.search_meta_decks(query=query, mtg_format=request.format, limit=limit)
+            tool_results["meta_decks"].extend(documents)
+            steps.append({"label": "Agent meta deck search", "detail": f"{query} -> {len(documents)} documents"})
+            return documents
+
+        @function_tool
+        def search_rules(intent: str, limit: int = 20) -> list[dict[str, Any]]:
+            """Search comprehensive rules context for a specific deck-building or legality question."""
+            documents = self.tools.search_rules(intent=intent, limit=limit)
+            tool_results["rules"].extend(documents)
+            steps.append({"label": "Agent rules search", "detail": f"{intent} -> {len(documents)} documents"})
+            return documents
+
+        @function_tool
+        async def search_cards_scryfall(query: str, limit: int = 24) -> list[dict[str, Any]]:
+            """Search live Scryfall for exact paper card candidates."""
+            documents = await self.tools.search_cards_scryfall(query=query, limit=limit)
+            tool_results["cards"].extend(documents)
+            steps.append({"label": "Agent Scryfall search", "detail": f"{query} -> {len(documents)} live cards"})
+            return documents
+
+        @function_tool
+        async def lookup_card(name: str) -> dict[str, Any]:
+            """Look up a requested or exact card name from live Scryfall."""
+            document = await self.tools.lookup_card(name=name)
+            tool_results["lookups"].append(document)
+            steps.append({"label": "Agent card lookup", "detail": f"{name} -> live Scryfall card"})
+            return document
+
+        @function_tool
+        def curate_context(max_notes: int = 15) -> list[str]:
+            """Compress gathered RAG context into a short list of high-signal notes."""
+            documents = [
+                *[document_to_model_context(document) for document in strategy_context],
+                *[document_to_model_context(document) for document in rules_context],
+                *tool_results["strategy"],
+                *tool_results["meta_decks"],
+                *tool_results["rules"],
+            ]
+            notes = self.tools.curate_context_notes(documents, max_notes=max_notes)
+            steps.append({"label": "Agent context curation", "detail": f"Curated {len(notes)} notes from gathered context"})
+            return notes
+
+        @function_tool
+        def evaluate_deck_candidates(cards_json: str) -> list[dict[str, Any]]:
+            """Score JSON-encoded candidate card payloads against the request's constraints."""
+            cards = _loads_json_array(cards_json, "candidate cards")
+            evaluations = self.tools.evaluate_deck_candidates(cards, request)
+            tool_results["evaluations"].append(evaluations)
+            steps.append({"label": "Agent candidate evaluation", "detail": f"Evaluated {len(evaluations)} candidates"})
+            return evaluations
+
+        @function_tool
+        def validate_deck_cards(cards_json: str) -> dict[str, Any]:
+            """Validate a JSON-encoded complete decklist against deterministic deck construction rules."""
+            cards = _loads_json_array(cards_json, "deck cards")
+            validation = self.tools.validate_deck_cards(cards, request.format)
+            tool_results["validations"].append(validation)
+            status = "valid" if validation.get("is_valid") else "invalid"
+            error_count = len(validation.get("errors") or [])
+            steps.append({"label": "Agent validation", "detail": f"Proposed deck was {status} with {error_count} errors"})
+            return validation
+
+        instructions = (
+            "You are DeckManagerAgent for Magic: The Gathering deck construction. "
+            "Own the workflow: plan searches, call tools, inspect results, revise queries, curate context, "
+            "evaluate candidate cards, and only then return selected_cards. Use exact names from Scryfall "
+            "or lookup_card results. Call validate_deck_cards when you have a complete proposed list; if it "
+            "fails, revise before your final answer. The backend will still deterministically finalize land "
+            "counts, deck size, copy limits, budget, and legality after your output. "
+            "Prefer 8 to 22 high-quality nonland and nonbasic-land selections with counts reflecting role. "
+            "Use curate_context after broad retrieval so the final explanation is based on compact notes."
+            "\n\n"
+            + request_constraints_instructions(request)
+        )
+        input_payload = {
+            "request": request.model_dump(mode="json"),
+            "request_constraints": request_constraints_payload(request),
+            "budget_guidance": _budget_guidance(request),
+            "land_guidance": land_guidance,
+            "initial_strategy_context": [
+                document_to_model_context(document)
+                for document in strategy_context[:INITIAL_STRATEGY_CONTEXT_LIMIT]
+            ],
+            "initial_rules_context": [
+                document_to_model_context(document) for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
+            ],
+            "available_tool_names": [
+                "search_strategy",
+                "search_meta_decks",
+                "search_rules",
+                "search_cards_scryfall",
+                "lookup_card",
+                "curate_context",
+                "evaluate_deck_candidates",
+                "validate_deck_cards",
+            ],
+        }
+        result = await run_structured_openai_agent(
+            settings=self.settings,
+            name="MTG deck manager",
+            instructions=instructions,
+            input_payload=input_payload,
+            output_type=AgenticDeckOutput,
+            tools=[
+                search_strategy,
+                search_meta_decks,
+                search_rules,
+                search_cards_scryfall,
+                lookup_card,
+                curate_context,
+                evaluate_deck_candidates,
+                validate_deck_cards,
+            ],
+            max_turns=12,
+        )
+        steps.append(
+            {
+                "label": "Agent final selection",
+                "detail": f"Returned {len(result.get('selected_cards', []))} card names after tool-driven planning.",
+            }
+        )
+        result["agent_steps"] = steps
+        result["tool_card_names"] = _tool_card_names(tool_results)
+        result["tool_card_payloads"] = _tool_card_payloads(tool_results)
+        result["tool_context_payloads"] = _tool_context_payloads(tool_results)
+        return result
+
     async def _plan_rag(
         self,
         request: DeckRequest,
@@ -798,10 +1024,11 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 ("search_strategy", "search_meta_decks", "search_rules")
             ),
             "retrieved_rules_context": [
-                document_to_model_context(document) for document in rules_context[:8]
+                document_to_model_context(document) for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
             ],
             "retrieved_strategy_context": [
-                document_to_model_context(document) for document in strategy_context[:12]
+                document_to_model_context(document)
+                for document in strategy_context[:INITIAL_STRATEGY_CONTEXT_LIMIT]
             ],
         }
         logger.info("OpenAI RAG planning started", extra=log_extra(model=self.settings.openai_model))
@@ -842,13 +1069,16 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "deck_workflow": workflow_payload("scryfall_planning"),
             "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
             "retrieved_strategy_context": [
-                document_to_model_context(document) for document in rag_context["strategy"][:12]
+                document_to_model_context(document)
+                for document in rag_context["strategy"][:SCRYFALL_PLAN_STRATEGY_CONTEXT_LIMIT]
             ],
             "retrieved_meta_deck_context": [
-                document_to_model_context(document) for document in rag_context["meta_decks"][:12]
+                document_to_model_context(document)
+                for document in rag_context["meta_decks"][:SCRYFALL_PLAN_META_CONTEXT_LIMIT]
             ],
             "retrieved_rules_context": [
-                document_to_model_context(document) for document in rag_context["rules"][:8]
+                document_to_model_context(document)
+                for document in rag_context["rules"][:INITIAL_RULE_CONTEXT_LIMIT]
             ],
         }
         logger.info("OpenAI live Scryfall planning started", extra=log_extra(model=self.settings.openai_model))
@@ -877,17 +1107,25 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         results: dict[str, Any] = {"strategy": [], "meta_decks": [], "rules": []}
 
         for query in _string_list(plan.get("strategy_queries"))[:4]:
-            documents = self.tools.search_strategy(query=query, mtg_format=request.format, limit=8)
+            documents = self.tools.search_strategy(
+                query=query,
+                mtg_format=request.format,
+                limit=PLANNED_STRATEGY_SEARCH_LIMIT,
+            )
             results["strategy"].extend(documents)
             steps.append({"label": "RAG strategy search", "detail": f"{query} -> {len(documents)} documents"})
 
         for query in _string_list(plan.get("meta_deck_queries"))[:4]:
-            documents = self.tools.search_meta_decks(query=query, mtg_format=request.format, limit=10)
+            documents = self.tools.search_meta_decks(
+                query=query,
+                mtg_format=request.format,
+                limit=PLANNED_META_DECK_SEARCH_LIMIT,
+            )
             results["meta_decks"].extend(documents)
             steps.append({"label": "RAG meta deck search", "detail": f"{query} -> {len(documents)} meta deck documents"})
 
         for query in _string_list(plan.get("rules_queries"))[:3]:
-            documents = self.tools.search_rules(intent=query, limit=6)
+            documents = self.tools.search_rules(intent=query, limit=PLANNED_RULE_SEARCH_LIMIT)
             results["rules"].extend(documents)
             steps.append({"label": "RAG rules search", "detail": f"{query} -> {len(documents)} documents"})
 
@@ -974,13 +1212,16 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "land_guidance": land_guidance,
             "candidate_cards": candidates,
             "retrieved_rules_context": [
-                document_to_model_context(document) for document in rules_context[:12]
+                document_to_model_context(document) for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
             ],
             "retrieved_strategy_context": [
-                document_to_model_context(document) for document in strategy_context[:18]
+                document_to_model_context(document)
+                for document in strategy_context[:SELECTION_STRATEGY_CONTEXT_LIMIT]
             ],
             "retrieved_meta_deck_context": [
-                payload for payload in tool_results.get("meta_decks", [])[:12] if isinstance(payload, dict)
+                payload
+                for payload in tool_results.get("meta_decks", [])[:SELECTION_META_CONTEXT_LIMIT]
+                if isinstance(payload, dict)
             ],
             "agent_tool_results": tool_results,
             "instructions": (

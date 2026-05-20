@@ -373,8 +373,8 @@ def _sideboard_role(document: RetrievedDocument) -> str:
 
 def _max_nonland_cards(mtg_format: Format) -> int:
     if mtg_format == Format.commander:
-        return _minimum_deck_size(mtg_format) - 32
-    return (_minimum_deck_size(mtg_format) - 18) // 4
+        return _minimum_deck_size(mtg_format) - 31
+    return (_minimum_deck_size(mtg_format) - 17) // 4
 
 
 def _minimum_deck_size(mtg_format: Format) -> int:
@@ -383,13 +383,13 @@ def _minimum_deck_size(mtg_format: Format) -> int:
 
 def _target_land_count(request: DeckRequest, nonland_cards: list[dict]) -> int:
     if request.format == Format.commander:
-        base = 37
-        minimum = 32
-        maximum = 42
+        base = 36
+        minimum = 31
+        maximum = 40
     else:
-        base = 24
-        minimum = 18
-        maximum = 28
+        base = 23
+        minimum = 17
+        maximum = 26
 
     playstyle = request.playstyle.lower()
     if playstyle in {"aggro", "tempo"}:
@@ -641,7 +641,7 @@ def _scryfall_text_terms(request: DeckRequest, strategy_context: list[RetrievedD
             request.playstyle,
             request.strategy,
             " ".join(request.must_include),
-            " ".join(document.title for document in strategy_context[:8]),
+            " ".join(document.title for document in strategy_context[:16]),
         ]
     ).lower()
     terms: list[str] = []
@@ -867,13 +867,14 @@ def _response_context_documents(
     non_meta_strategy = [item for item in strategy_context if item.source != "mtgdecks_meta_decks"]
     return [
         *non_meta_strategy[:6],
-        *meta_context[:6],
-        *rules_context[:4],
+        *meta_context[:12],
+        *non_meta_strategy[6:20],
+        *rules_context[:10],
         *[
             item
             for item in card_context
             if _is_candidate_nonland_document(item, mtg_format, requested_colors)
-        ][:8],
+        ][:12],
     ]
 
 
@@ -956,6 +957,54 @@ def _documents_from_agent_card_payloads(agent_result: dict) -> list[RetrievedDoc
             )
         )
     return documents
+
+
+async def _hydrate_agent_selected_card_payloads(
+    agent_result: dict,
+    mcp_server: DeckBuilderMcpServer,
+    steps: list[dict[str, str]],
+) -> None:
+    existing_names: set[str] = set()
+    payloads = agent_result.setdefault("tool_card_payloads", [])
+    if not isinstance(payloads, list):
+        payloads = []
+        agent_result["tool_card_payloads"] = payloads
+
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        metadata = payload.get("metadata") or {}
+        name = metadata.get("name") or payload.get("title")
+        if isinstance(name, str) and name:
+            existing_names.add(name)
+
+    selected_names: list[str] = []
+    for card in agent_result.get("selected_cards", []):
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name") or "").strip()
+        if not name or name in existing_names or name in selected_names or _is_basic_land(name):
+            continue
+        selected_names.append(name)
+
+    hydrated = 0
+    failed: list[str] = []
+    for name in selected_names:
+        try:
+            payload = await mcp_server.call_tool("lookup_card", {"name": name})
+        except httpx.HTTPError:
+            failed.append(name)
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+            existing_names.add(name)
+            hydrated += 1
+
+    if selected_names:
+        detail = f"Hydrated {hydrated} of {len(selected_names)} selected nonbasic names through live Scryfall lookup."
+        if failed:
+            detail += f" Failed: {', '.join(failed[:5])}."
+        steps.append({"label": "Agent selected-card hydration", "detail": detail})
 
 
 def _documents_from_agent_context_payloads(agent_result: dict) -> list[RetrievedDocument]:
@@ -1075,7 +1124,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             "search_rag_text",
             {
                 "query": _rules_query_for_request(request),
-                "limit": 4,
+                "limit": 20,
                 "source": "mtg_comprehensive_rules",
             },
         )
@@ -1088,7 +1137,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     "source": "mtg_comprehensive_rules",
                     "metadata_key": "rule_number",
                     "prefixes": _rules_prefixes_for_request(request),
-                    "limit": 8,
+                    "limit": 30,
                 },
             )
         )
@@ -1099,13 +1148,13 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             "search_rag_text",
             {
                 "query": _strategy_query(request, candidate_query) or "deck building strategy",
-                "limit": 60,
+                "limit": 120,
                 "source": "mtgdecks_articles",
                 "metadata_filters": {"format": [request.format.value, ""]} if request.format != Format.casual else None,
             },
         )
     )
-    strategy_context = _filter_strategy_documents(strategy_context, request.format)[:18]
+    strategy_context = _filter_strategy_documents(strategy_context, request.format)[:40]
     general_strategy_query = _general_strategy_query(request)
     strategy_context = _dedupe_documents(
         [
@@ -1115,7 +1164,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     "search_rag_text",
                     {
                         "query": _strategy_query(request, candidate_query) or f"{request.format.value} metagame decks",
-                        "limit": 30,
+                        "limit": 60,
                         "source": "mtgdecks_meta_decks",
                         "metadata_filters": {"format": [request.format.value]} if request.format != Format.casual else None,
                     },
@@ -1126,7 +1175,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     "search_rag_text",
                     {
                         "query": general_strategy_query,
-                        "limit": 30,
+                        "limit": 60,
                         "source": "mtgdecks_articles",
                         "metadata_filters": {"format": [""]},
                     },
@@ -1137,13 +1186,13 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     "search_rag_text",
                     {
                         "query": general_strategy_query,
-                        "limit": 10,
+                        "limit": 30,
                         "source": "foundational_strategy",
                     },
                 )
             ),
         ]
-    )[:30]
+    )[:80]
     card_query = _card_query_from_context(request, candidate_query, strategy_context, rules_context)
     max_nonland_cards = _max_nonland_cards(request.format)
     card_context = []
@@ -1211,12 +1260,13 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 rules_context=rules_context,
                 strategy_context=strategy_context,
                 land_guidance={
-                    "minimum": 32 if request.format == Format.commander else 18,
+                    "minimum": 31 if request.format == Format.commander else 17,
                     "default": _target_land_count(request, retrieved_cards),
-                    "maximum": 42 if request.format == Format.commander else 28,
+                    "maximum": 40 if request.format == Format.commander else 26,
                 },
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
+            await _hydrate_agent_selected_card_payloads(agent_result, mcp_server, agent_steps)
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
             strategy_context = _dedupe_documents(
                 [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]
@@ -1318,12 +1368,13 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 rules_context=rules_context,
                 strategy_context=strategy_context,
                 land_guidance={
-                    "minimum": 32 if request.format == Format.commander else 18,
+                    "minimum": 31 if request.format == Format.commander else 17,
                     "default": _target_land_count(request, retrieved_cards),
-                    "maximum": 42 if request.format == Format.commander else 28,
+                    "maximum": 40 if request.format == Format.commander else 26,
                 },
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
+            await _hydrate_agent_selected_card_payloads(agent_result, mcp_server, agent_steps)
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
             strategy_context = _dedupe_documents(
                 [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]

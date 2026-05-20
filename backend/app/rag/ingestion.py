@@ -38,6 +38,8 @@ def build_card_documents(card: dict[str, Any]) -> list[RagDocumentInput]:
                     "type_line": card.get("type_line"),
                     "keywords": card.get("keywords", []),
                     "legalities": card.get("legalities", {}),
+                    "prices": card.get("prices", {}),
+                    "estimated_price_usd": _price_usd(card),
                     "layout": card.get("layout"),
                     "games": card.get("games", []),
                 },
@@ -49,6 +51,27 @@ def build_card_documents(card: dict[str, Any]) -> list[RagDocumentInput]:
 
 def load_scryfall_card_corpus_file(path: Path) -> list[RagDocumentInput]:
     return load_scryfall_bulk_file(path)
+
+
+def _price_usd(card: dict[str, Any]) -> float | None:
+    prices = card.get("prices")
+    if not isinstance(prices, dict):
+        return None
+    value = prices.get("usd")
+    if value not in (None, ""):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    for key in ("usd_foil", "usd_etched"):
+        value = prices.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def load_scryfall_bulk_file(path: Path) -> list[RagDocumentInput]:
@@ -231,6 +254,11 @@ def load_mtgdecks_meta_decks_file(path: Path) -> list[RagDocumentInput]:
                         "metagame_share": record.get("metagame_share"),
                         "url": url,
                         "top_deck_url": top_deck.get("url") if isinstance(top_deck, dict) else "",
+                        "top_deck_cards": [
+                            {"count": card.get("count"), "name": card.get("name")}
+                            for card in cards
+                            if isinstance(card, dict) and card.get("count") and card.get("name")
+                        ],
                         "card_names": [
                             card.get("name")
                             for card in cards

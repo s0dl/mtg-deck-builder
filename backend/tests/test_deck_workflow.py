@@ -57,6 +57,18 @@ def test_workflow_instructions_bind_the_model_to_one_phase() -> None:
     assert "Do not ask for tools outside the current workflow phase." in instructions
 
 
+def test_rag_planning_receives_comprehensive_rules_index() -> None:
+    payload = workflow_payload("rag_planning")
+    instructions = workflow_instructions("rag_planning")
+
+    assert "mtg_comprehensive_rules_index" in payload
+    assert payload["mtg_comprehensive_rules_index"][0]["section"] == "1. Game Concepts"
+    assert "117. Timing and Priority" in payload["mtg_comprehensive_rules_index"][0]["rules"]
+    assert "903. Commander" in payload["mtg_comprehensive_rules_index"][-1]["rules"]
+    assert "Use this Magic Comprehensive Rules index" in instructions
+    assert "601. Casting Spells" in instructions
+
+
 def test_request_constraints_payload_exposes_must_include_and_avoid_terms() -> None:
     request = DeckRequest(
         format=Format.modern,

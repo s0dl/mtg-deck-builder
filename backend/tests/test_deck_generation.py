@@ -1,11 +1,15 @@
+import asyncio
+
 from app.api.decks import (
     _card_query_from_context,
     _build_sideboard_cards,
     _cards_from_retrieved_documents,
+    _documents_from_agent_card_payloads,
     _ensure_minimum_deck_size,
     _filter_strategy_documents,
     _finalize_deck_cards,
     _general_strategy_query,
+    _hydrate_agent_selected_card_payloads,
     _response_context_documents,
     _selected_cards_from_agent_result,
     _shape_deck_size,
@@ -170,8 +174,8 @@ def test_target_land_count_changes_with_playstyle_and_curve() -> None:
         for index in range(9)
     ]
 
-    assert _target_land_count(DeckRequest(format=Format.modern, playstyle="aggro"), low_curve_cards) == 21
-    assert _target_land_count(DeckRequest(format=Format.modern, playstyle="control"), high_curve_cards) == 27
+    assert _target_land_count(DeckRequest(format=Format.modern, playstyle="aggro"), low_curve_cards) == 20
+    assert _target_land_count(DeckRequest(format=Format.modern, playstyle="control"), high_curve_cards) == 26
 
 
 def test_finalize_deck_cards_trims_to_target_size_and_preserves_prices() -> None:
@@ -320,6 +324,68 @@ def test_selected_cards_from_agent_result_forces_commander_singletons() -> None:
     cards = _selected_cards_from_agent_result(agent_result, request, [make_card_document("Sol Ring")])
 
     assert cards[0]["count"] == 1
+
+
+def test_hydrate_agent_selected_card_payloads_looks_up_missing_selected_names() -> None:
+    class FakeMcpServer:
+        async def call_tool(self, name: str, arguments: dict) -> dict:
+            assert name == "lookup_card"
+            card_name = arguments["name"]
+            return {
+                "title": card_name,
+                "content": f"{card_name} card text",
+                "source": "scryfall_live",
+                "metadata": {
+                    "name": card_name,
+                    "type_line": "Instant",
+                    "colors": ["R"],
+                    "color_identity": ["R"],
+                    "legalities": {"modern": "legal"},
+                },
+            }
+
+    agent_result = {
+        "selected_cards": [
+            {"name": "Ruby Medallion", "count": 4, "role": "engine"},
+            {"name": "Lightning Bolt", "count": 4, "role": "interaction"},
+        ],
+        "tool_card_payloads": [
+            {
+                "title": "Ruby Medallion",
+                "content": "Ruby Medallion card text",
+                "source": "scryfall_live",
+                "metadata": {"name": "Ruby Medallion"},
+            }
+        ],
+    }
+    steps: list[dict[str, str]] = []
+
+    asyncio.run(
+        _hydrate_agent_selected_card_payloads(
+            agent_result,
+            FakeMcpServer(),  # type: ignore[arg-type]
+            steps,
+        )
+    )
+
+    documents = _documents_from_agent_card_payloads(agent_result)
+    cards = _selected_cards_from_agent_result(
+        agent_result,
+        DeckRequest(format=Format.modern, colors=["R"]),
+        documents,
+    )
+
+    assert {payload["metadata"]["name"] for payload in agent_result["tool_card_payloads"]} == {
+        "Ruby Medallion",
+        "Lightning Bolt",
+    }
+    assert {card["name"] for card in cards} == {"Ruby Medallion", "Lightning Bolt"}
+    assert steps == [
+        {
+            "label": "Agent selected-card hydration",
+            "detail": "Hydrated 1 of 1 selected nonbasic names through live Scryfall lookup.",
+        }
+    ]
 
 
 def test_filter_strategy_documents_removes_other_formats() -> None:

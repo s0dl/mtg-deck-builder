@@ -16,6 +16,8 @@ async def run_structured_openai_agent(
     instructions: str,
     input_payload: dict[str, Any],
     output_type: type[BaseModel],
+    tools: list[Any] | None = None,
+    max_turns: int | None = None,
 ) -> dict[str, Any]:
     try:
         from agents import Agent, Runner
@@ -35,10 +37,12 @@ async def run_structured_openai_agent(
         instructions=instructions,
         model=settings.openai_model,
         output_type=output_type,
+        tools=tools or [],
     )
     result = await Runner.run(
         agent,
         json.dumps(input_payload, separators=(",", ":")),
+        max_turns=max_turns,
     )
     final_output = result.final_output
     if isinstance(final_output, BaseModel):
