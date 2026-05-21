@@ -5,7 +5,7 @@ This directory contains the request-scoped MCP tool server and corpus-backed Mag
 ## Main Files
 
 - `server.py` registers and executes deck-builder MCP tools for RAG, card corpus search, and validation.
-- `scryfall_client.py` contains the Scryfall response-to-document mapper used by ingestion and corpus compatibility code.
+- `app/rag/card_documents.py` contains the card response-to-document mapper used by ingestion and corpus compatibility code.
 
 ## Tools
 

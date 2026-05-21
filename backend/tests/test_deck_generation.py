@@ -19,9 +19,9 @@ from app.api.decks import (
     _strategy_query,
     _target_land_count,
 )
-from app.mcp.scryfall_client import scryfall_card_to_document
 from app.models.deck import DeckRequest, Format
 from app.rag.retriever import RetrievedDocument
+from app.rag.card_documents import scryfall_card_to_document
 
 
 def make_card_document(
