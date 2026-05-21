@@ -186,7 +186,8 @@ export function AgentActivity({
   };
   const displayItems = items.length > 0 ? items : [fallbackItem];
   const primary = isLive && timing.isPastEstimate ? stillWorkingItem : isLive ? displayItems[activeIndex] : displayItems[displayItems.length - 1];
-  const PrimaryIcon = primary.Icon;
+  const isCompactComplete = !isLive && mode === "compact";
+  const PrimaryIcon = isCompactComplete ? BrainCircuit : primary.Icon;
   const elapsedSeconds = Math.max(1, Math.floor(elapsedMs / 1000));
   const progress = isLive ? timing.progress : steps.length > 0 ? 100 : 0;
 
@@ -200,9 +201,9 @@ export function AgentActivity({
         </div>
 
         <div className="activity-copy" aria-live={isLive ? "polite" : undefined}>
-          <p className="eyebrow">{isLive ? "Live agent build" : "Agent workflow"}</p>
-          {mode === "immersive" ? <h2>{primary.label}</h2> : <h3>{primary.label}</h3>}
-          <p>{primary.detail}</p>
+          {!isCompactComplete && <p className="eyebrow">{isLive ? "Live agent build" : "Agent workflow"}</p>}
+          {mode === "immersive" ? <h2>{primary.label}</h2> : <h3>{isCompactComplete ? "Agent workflow" : primary.label}</h3>}
+          {!isCompactComplete && <p>{primary.detail}</p>}
         </div>
 
         <div className="activity-state">
