@@ -6,6 +6,10 @@ Path: `scripts`
 
 Download and ingest external knowledge sources into local files and `rag_documents`.
 
+## Before downloading
+
+Make sure to change DATABASE_URL from postgres to localhost.
+
 ## Download Scripts
 
 ```bash
