@@ -1,4 +1,4 @@
-from scripts.download_mtgdecks_meta_decks import (
+from scripts.scrapers.download_mtgdecks_meta_decks import (
     format_url,
     parse_archetype_page,
     parse_decklist_page,

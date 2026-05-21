@@ -1,4 +1,4 @@
-from scripts.download_mtgdecks_articles import listing_url, parse_article, parse_listing
+from scripts.scrapers.download_mtgdecks_articles import listing_url, parse_article, parse_listing
 
 
 def test_listing_url_uses_wonky_pagination_path_after_first_page() -> None:
