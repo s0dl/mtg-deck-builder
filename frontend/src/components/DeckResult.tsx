@@ -1,5 +1,6 @@
 import { AlertTriangle, BrainCircuit, CheckCircle2 } from "lucide-react";
 
+import { AgentActivity } from "./AgentActivity";
 import type { DeckResponse } from "../lib/api";
 
 type DeckResultProps = {
@@ -103,32 +104,11 @@ export function DeckResult({ deck }: DeckResultProps) {
 
         <aside className="inspector" aria-label="Agent workflow and deck context">
           <section className="inspector-section">
-            <div className="section-heading">
-              <h3>Agent Workflow</h3>
-              <span>{deck.agent_steps.length} steps</span>
-            </div>
-            <div className="workflow-strip" aria-label="Expected agent workflow">
-              <span>Initial RAG</span>
-              <span>GPT plan</span>
-              <span>RAG tools</span>
-              <span>Validation</span>
-              <span>Scryfall prices</span>
-            </div>
-            {deck.agent_steps.length > 0 ? (
-              <div className="agent-steps">
-                {deck.agent_steps.map((step, index) => (
-                  <div className="agent-step" key={`${step.label}-${index}`}>
-                    <span className="step-index">{index + 1}</span>
-                    <div>
-                      <strong>{step.label}</strong>
-                      <span>{step.detail}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">No model or tool activity reported.</p>
-            )}
+            <AgentActivity
+              generationMode={deck.generation_mode}
+              mode="compact"
+              steps={deck.agent_steps}
+            />
           </section>
 
           <section className="inspector-section">

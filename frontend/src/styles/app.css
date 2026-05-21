@@ -73,6 +73,12 @@ textarea {
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.24);
 }
 
+.app-shell.is-building {
+  grid-template-columns: 1fr;
+  gap: 0;
+  padding: 0;
+}
+
 .builder,
 .result-panel {
   min-width: 0;
@@ -91,6 +97,270 @@ textarea {
 
 .result-panel {
   padding: 24px;
+}
+
+.agent-activity {
+  min-width: 0;
+  view-transition-name: agent-activity;
+}
+
+.agent-activity.immersive {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 58%, transparent), transparent 420px),
+    var(--bg);
+  padding: 42px;
+}
+
+.agent-activity.compact {
+  display: grid;
+  gap: 12px;
+}
+
+.activity-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.agent-activity.immersive .activity-main,
+.agent-activity.immersive .activity-request,
+.agent-activity.immersive .activity-progress,
+.agent-activity.immersive .activity-timeline {
+  width: 100%;
+  max-width: 1120px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.agent-activity.immersive .activity-main {
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.activity-mark,
+.activity-step-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.activity-mark {
+  width: 44px;
+  height: 44px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 8px;
+}
+
+.agent-activity.immersive .activity-mark {
+  width: 64px;
+  height: 64px;
+}
+
+.activity-copy {
+  min-width: 0;
+}
+
+.activity-copy h2,
+.activity-copy h3,
+.activity-copy p {
+  margin: 0;
+}
+
+.activity-copy h2 {
+  font-size: 44px;
+  line-height: 1.02;
+}
+
+.activity-copy h3 {
+  font-size: 16px;
+}
+
+.activity-copy p:last-child {
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.agent-activity.immersive .activity-copy p:last-child {
+  max-width: 68ch;
+  font-size: 17px;
+}
+
+.activity-state {
+  justify-self: end;
+}
+
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.activity-badge.running {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+.activity-badge.done {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.activity-request {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.activity-request div {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 13px;
+}
+
+.activity-request span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.activity-request strong {
+  overflow-wrap: anywhere;
+}
+
+.activity-progress {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 70%, var(--panel));
+}
+
+.agent-activity.immersive .activity-progress {
+  height: 12px;
+  margin-top: 26px;
+}
+
+.activity-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--bar));
+  transition: width 500ms ease;
+}
+
+.activity-timeline {
+  display: grid;
+  gap: 9px;
+}
+
+.agent-activity.immersive .activity-timeline {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.agent-activity.compact .activity-timeline {
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.activity-step {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+}
+
+.agent-activity.immersive .activity-step {
+  min-height: 142px;
+  grid-template-columns: 1fr;
+  align-content: start;
+}
+
+.activity-step.active {
+  border-color: var(--accent);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.activity-step.pending {
+  opacity: 0.62;
+}
+
+.activity-step-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+}
+
+.activity-step div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.activity-step strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.activity-step span:last-child {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.activity-spinner {
+  animation: activity-spin 900ms linear infinite;
+}
+
+::view-transition-old(agent-activity),
+::view-transition-new(agent-activity) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@keyframes activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-spinner {
+    animation: none;
+  }
+
+  .activity-progress-fill {
+    transition: none;
+  }
+
+  ::view-transition-old(agent-activity),
+  ::view-transition-new(agent-activity) {
+    animation-duration: 1ms;
+  }
 }
 
 .intro-block,
@@ -533,6 +803,14 @@ h3 {
   .builder {
     position: static;
   }
+
+  .agent-activity.immersive .activity-request {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-activity.immersive .activity-timeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -543,6 +821,43 @@ h3 {
   .builder,
   .result-panel {
     padding: 18px;
+  }
+
+  .app-shell.is-building {
+    padding: 0;
+  }
+
+  .agent-activity.immersive {
+    align-content: start;
+    padding: 24px 16px;
+  }
+
+  .agent-activity.immersive .activity-main,
+  .activity-main {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .agent-activity.immersive .activity-mark {
+    width: 52px;
+    height: 52px;
+  }
+
+  .activity-state {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .activity-copy h2 {
+    font-size: 30px;
+  }
+
+  .agent-activity.immersive .activity-copy p:last-child {
+    font-size: 15px;
+  }
+
+  .agent-activity.immersive .activity-request,
+  .agent-activity.immersive .activity-timeline {
+    grid-template-columns: 1fr;
   }
 
   .form-grid,
