@@ -72,13 +72,11 @@ If old card corpus rows were embedded before field formatting changed, delete or
 ## Known Gaps
 
 - Rules retrieval is better than before but still needs explicit rule-intent mapping.
-- The Scryfall card corpus remains ingestible, but the OpenAI/Ollama agent paths now use live Scryfall for card discovery.
 - Candidate scoring is still heuristic and should be refined against real generated deck outputs.
 - The deterministic fallback remains heuristic and should become a real scoring and construction pipeline.
 - The MCP server is currently request-scoped and in-process; expose a stdio/HTTP transport if external clients need to call it directly.
 
 ## Recommended Next Work
 
-1. Improve rules retrieval by mapping request formats to explicit rule intents.
-2. Refine deterministic construction so the evaluator can enforce role counts rather than only ranking candidates.
-3. Add an external MCP transport if another process needs to call the deck-builder tools outside the FastAPI request path.
+1. Add an external MCP transport if another process needs to call the deck-builder tools outside the FastAPI request path.
+2. Improve rules retrieval by mapping request formats to explicit rule intents.
