@@ -28,6 +28,15 @@ class FakeTools:
     async def search_cards_scryfall(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
+    def search_card_corpus(
+        self,
+        query: str,
+        mtg_format: Format | None = None,
+        limit: int = 20,
+        request: DeckRequest | None = None,
+    ) -> list[dict[str, Any]]:
+        return []
+
 
 def test_workflow_orders_rag_before_live_scryfall_and_validation() -> None:
     tool_order = workflow_tool_order()
@@ -45,7 +54,7 @@ def test_workflow_payload_limits_tools_to_current_phase() -> None:
 
     assert rag_payload["phase_allowed_tools"] == list(PHASE_ALLOWED_TOOLS["rag_planning"])
     assert "search_cards_scryfall" not in rag_payload["phase_allowed_tools"]
-    assert scryfall_payload["phase_allowed_tools"] == ["search_cards_scryfall"]
+    assert scryfall_payload["phase_allowed_tools"] == ["search_cards_scryfall", "search_card_corpus"]
     assert selection_payload["phase_allowed_tools"] == []
 
 

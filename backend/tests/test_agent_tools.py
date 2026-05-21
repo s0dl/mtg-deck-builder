@@ -132,6 +132,32 @@ def test_search_card_corpus_land_queries_return_budget_lands_first() -> None:
     assert [result["title"] for result in results] == ["Shivan Reef", "Steam Vents"]
 
 
+def test_lookup_card_can_find_exact_land_names() -> None:
+    server = DeckBuilderMcpServer(
+        retriever=FakeRetriever(
+            [
+                card_document(
+                    "Steam Vents",
+                    type_line="Land - Island Mountain",
+                    color_identity=["U", "R"],
+                    content="blue red shock land mana fixing",
+                )
+            ]
+        )
+    )
+
+    result = server.call_tool_sync(
+        "lookup_card",
+        {
+            "name": "Steam Vents",
+            "mtg_format": Format.modern.value,
+            "request": DeckRequest(format=Format.modern, colors=["U", "R"]).model_dump(mode="json"),
+        },
+    )
+
+    assert result["title"] == "Steam Vents"
+
+
 def test_search_strategy_includes_meta_deck_documents() -> None:
     article = RetrievedDocument(
         title="Modern Izzet Prowess Guide",

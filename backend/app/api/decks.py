@@ -88,9 +88,9 @@ def _is_basic_land(card_name: str) -> bool:
 
 def _is_land_card(card: dict) -> bool:
     name = str(card.get("name") or "")
-    role = str(card.get("role") or "")
-    type_line = str(card.get("type_line") or "")
-    return _is_basic_land(name) or "Land" in role.split(" ") or "Land" in type_line.split(" ")
+    role_parts = {part.lower() for part in str(card.get("role") or "").split(" ")}
+    type_parts = {part.lower() for part in str(card.get("type_line") or "").split(" ")}
+    return _is_basic_land(name) or "land" in role_parts or "land" in type_parts
 
 
 def _is_non_deck_game_object(document: RetrievedDocument) -> bool:
@@ -100,7 +100,7 @@ def _is_non_deck_game_object(document: RetrievedDocument) -> bool:
 
 def _is_land_document(document: RetrievedDocument) -> bool:
     type_line = document.metadata.get("type_line") or ""
-    return "Land" in type_line.split(" ")
+    return "land" in {part.lower() for part in str(type_line).split(" ")}
 
 
 def _is_legal_in_format(document: RetrievedDocument, mtg_format: Format) -> bool:
@@ -240,6 +240,8 @@ def _merge_duplicate_cards(cards: list[dict], mtg_format: Format) -> list[dict]:
             existing["price_usd"] = card.get("price_usd")
         if existing.get("mana_value") is None and card.get("mana_value") is not None:
             existing["mana_value"] = card.get("mana_value")
+        if existing.get("type_line") is None and card.get("type_line") is not None:
+            existing["type_line"] = card.get("type_line")
 
     for card in merged.values():
         if not _is_basic_land(card["name"]):
@@ -903,6 +905,7 @@ def _coerce_model_cards(model_cards: list[dict], allowed_names: set[str]) -> lis
                 "count": count,
                 "role": str(card.get("role", "")).strip(),
                 "mana_value": card.get("mana_value"),
+                "type_line": card.get("type_line"),
                 "estimated_price_usd": card.get("estimated_price_usd"),
                 "price_usd": card.get("price_usd"),
             }
@@ -916,59 +919,68 @@ def _selected_cards_from_agent_result(
     card_documents: list[RetrievedDocument],
 ) -> list[dict]:
     lookup = _card_lookup(card_documents)
-    for payload in agent_result.get("tool_card_payloads", []):
-        if not isinstance(payload, dict):
-            continue
-        metadata = payload.get("metadata") or {}
-        name = metadata.get("name") or payload.get("title")
-        if not isinstance(name, str) or not name:
-            continue
-        lookup[name] = RetrievedDocument(
-            title=name,
-            content=str(payload.get("content") or ""),
-            source=str(payload.get("source") or "scryfall_live"),
-            metadata=metadata,
-        )
-    cards: list[dict] = []
-    for card in agent_result.get("selected_cards", []):
-        if not isinstance(card, dict):
-            continue
-        name = str(card.get("name") or "").strip()
-        if not name:
-            continue
-        document = lookup.get(name)
-        requested_count = int(card.get("count") or (1 if request.format == Format.commander else 4))
-        count = 1 if request.format == Format.commander else max(1, min(requested_count, 4))
-        cards.append(
-            _enrich_card_from_document(
-                {
-                    "name": name,
-                    "count": count,
-                    "role": card.get("role", "agent-selected card"),
-                },
-                document,
-            )
-        )
-    return cards
-
-
-def _documents_from_agent_card_payloads(agent_result: dict) -> list[RetrievedDocument]:
-    documents: list[RetrievedDocument] = []
-    for payload in agent_result.get("tool_card_payloads", []):
-        if not isinstance(payload, dict):
-            continue
-        metadata = payload.get("metadata") or {}
-        name = metadata.get("name") or payload.get("title")
-        if not isinstance(name, str) or not name:
-            continue
-        documents.append(
-            RetrievedDocument(
+    for payload_key in ("tool_card_payloads", "tool_land_payloads"):
+        for payload in agent_result.get(payload_key, []):
+            if not isinstance(payload, dict):
+                continue
+            metadata = payload.get("metadata") or {}
+            name = metadata.get("name") or payload.get("title")
+            if not isinstance(name, str) or not name:
+                continue
+            lookup[name] = RetrievedDocument(
                 title=name,
                 content=str(payload.get("content") or ""),
                 source=str(payload.get("source") or "scryfall_live"),
                 metadata=metadata,
             )
-        )
+    cards: list[dict] = []
+    for bucket, default_role in (
+        ("selected_cards", "agent-selected card"),
+        ("selected_lands", "agent-selected land"),
+    ):
+        for card in agent_result.get(bucket, []):
+            if not isinstance(card, dict):
+                continue
+            name = str(card.get("name") or "").strip()
+            if not name:
+                continue
+            document = lookup.get(name)
+            requested_count = int(card.get("count") or (1 if request.format == Format.commander else 4))
+            count = 1 if request.format == Format.commander else max(1, min(requested_count, 4))
+            role = str(card.get("role") or default_role)
+            if bucket == "selected_lands" and document is None and "land" not in role.lower().split():
+                role = f"{role} land"
+            cards.append(
+                _enrich_card_from_document(
+                    {
+                        "name": name,
+                        "count": count,
+                        "role": role,
+                    },
+                    document,
+                )
+            )
+    return cards
+
+
+def _documents_from_agent_card_payloads(agent_result: dict) -> list[RetrievedDocument]:
+    documents: list[RetrievedDocument] = []
+    for payload_key in ("tool_card_payloads", "tool_land_payloads"):
+        for payload in agent_result.get(payload_key, []):
+            if not isinstance(payload, dict):
+                continue
+            metadata = payload.get("metadata") or {}
+            name = metadata.get("name") or payload.get("title")
+            if not isinstance(name, str) or not name:
+                continue
+            documents.append(
+                RetrievedDocument(
+                    title=name,
+                    content=str(payload.get("content") or ""),
+                    source=str(payload.get("source") or "scryfall_live"),
+                    metadata=metadata,
+                )
+            )
     return documents
 
 
@@ -979,36 +991,50 @@ async def _hydrate_agent_selected_card_payloads(
     steps: list[dict[str, str]],
 ) -> None:
     existing_names: set[str] = set()
-    payloads = agent_result.setdefault("tool_card_payloads", [])
-    if not isinstance(payloads, list):
-        payloads = []
-        agent_result["tool_card_payloads"] = payloads
+    card_payloads = agent_result.setdefault("tool_card_payloads", [])
+    if not isinstance(card_payloads, list):
+        card_payloads = []
+        agent_result["tool_card_payloads"] = card_payloads
+    land_payloads = agent_result.setdefault("tool_land_payloads", [])
+    if not isinstance(land_payloads, list):
+        land_payloads = []
+        agent_result["tool_land_payloads"] = land_payloads
 
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            continue
-        metadata = payload.get("metadata") or {}
-        name = metadata.get("name") or payload.get("title")
-        if isinstance(name, str) and name:
-            existing_names.add(name)
+    for payloads in (card_payloads, land_payloads):
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            metadata = payload.get("metadata") or {}
+            name = metadata.get("name") or payload.get("title")
+            if isinstance(name, str) and name:
+                existing_names.add(name)
 
-    selected_names: list[str] = []
+    selected_names: list[tuple[str, bool]] = []
     for card in agent_result.get("selected_cards", []):
         if not isinstance(card, dict):
             continue
         name = str(card.get("name") or "").strip()
-        if not name or name in existing_names or name in selected_names or _is_basic_land(name):
+        selected_name_set = {selected_name for selected_name, _ in selected_names}
+        if not name or name in existing_names or name in selected_name_set or _is_basic_land(name):
             continue
-        selected_names.append(name)
+        selected_names.append((name, False))
+    for card in agent_result.get("selected_lands", []):
+        if not isinstance(card, dict):
+            continue
+        name = str(card.get("name") or "").strip()
+        selected_name_set = {selected_name for selected_name, _ in selected_names}
+        if not name or name in existing_names or name in selected_name_set or _is_basic_land(name):
+            continue
+        selected_names.append((name, True))
 
     hydrated = 0
     failed: list[str] = []
-    for name in selected_names:
+    for name, is_land in selected_names:
         try:
             payload = mcp_server.call_tool_sync(
                 "search_card_corpus",
                 {
-                    "query": name,
+                    "query": f"{name} land mana fixing" if is_land else name,
                     "limit": 1,
                     "mtg_format": request.format.value,
                     "request": request.model_dump(mode="json"),
@@ -1017,14 +1043,15 @@ async def _hydrate_agent_selected_card_payloads(
         except (TypeError, ValueError, RuntimeError):
             failed.append(name)
             continue
+        target_payloads = land_payloads if is_land else card_payloads
         if isinstance(payload, dict):
-            payloads.append(payload)
+            target_payloads.append(payload)
             existing_names.add(name)
             hydrated += 1
         elif isinstance(payload, list) and payload:
             first_payload = payload[0]
             if isinstance(first_payload, dict):
-                payloads.append(first_payload)
+                target_payloads.append(first_payload)
                 existing_names.add(name)
                 hydrated += 1
 
@@ -1107,7 +1134,7 @@ async def _enrich_prices_with_rag(
             payloads = mcp_server.call_tool_sync(
                 "search_card_corpus",
                 {
-                    "query": name,
+                    "query": f"{name} land mana fixing" if _is_land_card(card) else name,
                     "limit": 5,
                     "mtg_format": request.format.value,
                     "request": request.model_dump(mode="json"),
@@ -1332,7 +1359,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             model_card_context = [
                 item
                 for item in card_context
-                if _is_candidate_nonland_document(item, request.format, requested_colors)
+                if _is_playable_card_document(item, request.format, requested_colors)
             ]
             allowed_names = {
                 *(item.metadata.get("name") or item.title for item in model_card_context),
@@ -1441,7 +1468,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             model_card_context = [
                 item
                 for item in card_context
-                if _is_candidate_nonland_document(item, request.format, requested_colors)
+                if _is_playable_card_document(item, request.format, requested_colors)
             ]
             allowed_names = {
                 *(item.metadata.get("name") or item.title for item in model_card_context),

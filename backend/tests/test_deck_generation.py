@@ -251,6 +251,30 @@ def test_finalize_deck_cards_prefers_available_nonbasic_lands_before_basics() ->
     assert sum(card["count"] for card in finalized if card["role"] == "mana source") < 21
 
 
+def test_finalize_deck_cards_does_not_add_unselected_nonland_cards() -> None:
+    cards = [
+        {"name": f"Spell {index}", "count": 4, "role": "spell", "mana_value": 1}
+        for index in range(8)
+    ]
+    documents = [
+        *[
+            make_card_document(f"Spell {index}", colors=["R"], color_identity=["R"])
+            for index in range(10)
+        ],
+        make_card_document("Shivan Reef", type_line="Land", colors=[], color_identity=["U", "R"]),
+        make_card_document("Steam Vents", type_line="Land - Island Mountain", colors=[], color_identity=["U", "R"]),
+    ]
+    request = DeckRequest(format=Format.modern, colors=["U", "R"], playstyle="tempo")
+
+    finalized = _finalize_deck_cards(cards, request, documents=documents)
+
+    assert sum(card["count"] for card in finalized) == 60
+    assert sum(card["count"] for card in finalized if "Land" in str(card.get("type_line"))) == 8
+    assert sum(card["count"] for card in finalized if card["role"] == "mana source") == 20
+    assert "Spell 8" not in {card["name"] for card in finalized}
+    assert "Spell 9" not in {card["name"] for card in finalized}
+
+
 def test_build_sideboard_cards_for_constructed_formats() -> None:
     documents = [
         make_card_document(
@@ -307,6 +331,52 @@ def test_selected_cards_from_agent_result_preserves_variable_counts() -> None:
         ("Spell Pierce", 2),
         ("Otawara, Soaring City", 1),
     ]
+    assert next(card for card in cards if card["name"] == "Otawara, Soaring City")["type_line"] == "Legendary Land"
+
+
+def test_selected_cards_from_agent_result_reads_selected_lands() -> None:
+    agent_result = {
+        "selected_cards": [{"name": "Lightning Bolt", "count": 4, "role": "interaction"}],
+        "selected_lands": [{"name": "Steam Vents", "count": 4, "role": "mana fixing"}],
+        "tool_land_payloads": [
+            {
+                "title": "Steam Vents",
+                "content": "Land - Island Mountain",
+                "source": "scryfall_bulk",
+                "metadata": {
+                    "name": "Steam Vents",
+                    "type_line": "Land - Island Mountain",
+                    "colors": [],
+                    "color_identity": ["U", "R"],
+                    "legalities": {"modern": "legal"},
+                },
+            }
+        ],
+    }
+    request = DeckRequest(format=Format.modern, colors=["U", "R"])
+
+    cards = _selected_cards_from_agent_result(
+        agent_result,
+        request,
+        [make_card_document("Lightning Bolt", colors=["R"], color_identity=["R"])],
+    )
+
+    assert [(card["name"], card["count"]) for card in cards] == [("Lightning Bolt", 4), ("Steam Vents", 4)]
+    assert next(card for card in cards if card["name"] == "Steam Vents")["type_line"] == "Land - Island Mountain"
+
+
+def test_selected_lands_without_payload_still_count_as_lands() -> None:
+    agent_result = {
+        "selected_cards": [],
+        "selected_lands": [{"name": "Mystery Dual", "count": 4, "role": "mana fixing"}],
+    }
+    request = DeckRequest(format=Format.modern, colors=["U", "R"])
+
+    cards = _selected_cards_from_agent_result(agent_result, request, [])
+    finalized = _finalize_deck_cards(cards, request, documents=[])
+
+    assert next(card for card in cards if card["name"] == "Mystery Dual")["role"] == "mana fixing land"
+    assert next(card for card in finalized if card["name"] == "Mystery Dual")["count"] == 4
 
 
 def test_selected_cards_from_agent_result_clamps_constructed_counts() -> None:
@@ -392,6 +462,49 @@ def test_hydrate_agent_selected_card_payloads_looks_up_missing_selected_names() 
             "detail": "Hydrated 1 of 1 selected nonbasic names through RAG lookup.",
         }
     ]
+
+
+def test_hydrate_agent_selected_card_payloads_uses_land_query_for_selected_lands() -> None:
+    class FakeMcpServer:
+        def __init__(self) -> None:
+            self.query = ""
+
+        def call_tool_sync(self, name: str, arguments: dict) -> list[dict]:
+            assert name == "search_card_corpus"
+            self.query = arguments["query"]
+            return [
+                {
+                    "title": "Steam Vents",
+                    "content": "Land - Island Mountain",
+                    "source": "scryfall_bulk",
+                    "metadata": {
+                        "name": "Steam Vents",
+                        "type_line": "Land - Island Mountain",
+                        "colors": [],
+                        "color_identity": ["U", "R"],
+                        "legalities": {"modern": "legal"},
+                    },
+                }
+            ]
+
+    agent_result = {
+        "selected_cards": [],
+        "selected_lands": [{"name": "Steam Vents", "count": 4, "role": "mana fixing"}],
+    }
+    mcp_server = FakeMcpServer()
+    steps: list[dict[str, str]] = []
+
+    asyncio.run(
+        _hydrate_agent_selected_card_payloads(
+            agent_result,
+            DeckRequest(format=Format.modern, colors=["U", "R"]),
+            mcp_server,  # type: ignore[arg-type]
+            steps,
+        )
+    )
+
+    assert mcp_server.query == "Steam Vents land mana fixing"
+    assert agent_result["tool_land_payloads"][0]["metadata"]["name"] == "Steam Vents"
 
 
 def test_enrich_prices_with_rag_uses_card_corpus_metadata() -> None:

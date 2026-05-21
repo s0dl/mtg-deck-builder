@@ -280,16 +280,32 @@ class DeckBuilderMcpServer:
 
     def _tool_lookup_card_corpus(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = _string_arg(arguments, "name")
-        results = self._tool_search_card_corpus(
-            {
-                "query": query,
-                "limit": 1,
-                "mtg_format": _optional_string_arg(arguments.get("mtg_format")),
-                "request": arguments.get("request"),
-            }
-        )
-        if results:
-            return results[0]
+        fallback_result: dict[str, Any] | None = None
+        for lookup_query in (query, f"{query} land mana fixing"):
+            results = self._tool_search_card_corpus(
+                {
+                    "query": lookup_query,
+                    "limit": 1,
+                    "mtg_format": _optional_string_arg(arguments.get("mtg_format")),
+                    "request": arguments.get("request"),
+                }
+            )
+            if results:
+                exact_result = next(
+                    (
+                        result
+                        for result in results
+                        if str((result.get("metadata") or {}).get("name") or result.get("title")).lower()
+                        == query.lower()
+                    ),
+                    None,
+                )
+                if exact_result is not None:
+                    return exact_result
+                if lookup_query == query:
+                    fallback_result = results[0]
+        if fallback_result is not None:
+            return fallback_result
         raise ValueError(f"No card corpus entry found for: {query}")
 
     def _tool_validate_deck_cards(self, arguments: dict[str, Any]) -> dict[str, Any]:

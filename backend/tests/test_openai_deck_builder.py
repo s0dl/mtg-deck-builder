@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.agent.deck_builder import (
     AGENT_RAG_PLAN_SCHEMA,
+    AGENT_SELECTION_SCHEMA,
     AGENT_SCRYFALL_PLAN_SCHEMA,
     _aggregate_rag_context,
     _land_scryfall_queries,
@@ -84,6 +85,8 @@ def test_agent_plan_schemas_are_split_by_workflow_phase() -> None:
     assert "scryfall_queries" not in AGENT_RAG_PLAN_SCHEMA["properties"]
     assert "strategy_queries" not in AGENT_SCRYFALL_PLAN_SCHEMA["required"]
     assert "strategy_queries" not in AGENT_SCRYFALL_PLAN_SCHEMA["properties"]
+    assert "selected_lands" in AGENT_SELECTION_SCHEMA["required"]
+    assert "selected_lands" in AGENT_SELECTION_SCHEMA["properties"]
 
 
 def test_land_scryfall_queries_use_live_search_filters() -> None:

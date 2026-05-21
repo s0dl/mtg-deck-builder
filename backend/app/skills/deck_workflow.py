@@ -235,25 +235,27 @@ WORKFLOW_STEPS: tuple[DeckWorkflowStep, ...] = (
         key="discover_live_cards",
         objective=(
             "Use retrieved context to build targeted corpus-backed card searches for core cards, "
-            "support pieces, interaction, engines, and mana fixing."
+            "support pieces, interaction, engines, and a dedicated land/mana-fixing package."
         ),
-        tools=("search_cards_scryfall",),
+        tools=("search_cards_scryfall", "search_card_corpus"),
         output="Corpus-backed candidate card documents with legality, price, and text.",
     ),
     DeckWorkflowStep(
         key="select_candidates",
         objective=(
-            "Select exact candidate names only. Balance roles, curve, budget, legality, "
-            "color identity, and the requested strategy."
+            "Select exact candidate names only. Return nonlands in selected_cards and lands "
+            "in selected_lands while balancing roles, curve, budget, legality, color identity, "
+            "and the requested strategy."
         ),
         tools=(),
-        output="A focused card package with counts and short roles.",
+        output="Focused nonland and land packages with counts and short roles.",
     ),
     DeckWorkflowStep(
         key="validate_finalize",
         objective=(
-            "Let deterministic backend skills merge duplicates, fill land slots, enforce "
-            "copy limits, validate deck size, and refresh prices."
+            "Let deterministic backend skills merge duplicates, fill only leftover land/basic slots, "
+            "enforce copy limits, validate deck size, and refresh prices. Do not rely on the backend "
+            "to choose unselected spells."
         ),
         tools=("validate_deck_cards", "lookup_card"),
         output="A validated DeckResponse.",
@@ -262,7 +264,7 @@ WORKFLOW_STEPS: tuple[DeckWorkflowStep, ...] = (
 
 PHASE_ALLOWED_TOOLS: dict[WorkflowPhase, tuple[str, ...]] = {
     "rag_planning": ("search_strategy", "search_meta_decks", "search_rules"),
-    "scryfall_planning": ("search_cards_scryfall",),
+    "scryfall_planning": ("search_cards_scryfall", "search_card_corpus"),
     "card_selection": (),
     "validation": ("validate_deck_cards", "lookup_card"),
 }
@@ -274,11 +276,12 @@ PHASE_OBJECTIVES: dict[WorkflowPhase, str] = {
     ),
     "scryfall_planning": (
         "Plan only corpus-backed card searches from retrieved RAG context. Use format, color "
-        "identity, paper availability, and non-land or land filters explicitly."
+        "identity, paper availability, and explicit non-land plus land/mana-fixing filters."
     ),
     "card_selection": (
-        "Choose exact names from candidates only. Prefer coherent packages over isolated "
-        "staples, and leave final deck-size validation to deterministic backend skills."
+        "Choose exact names from candidates only. Put lands in selected_lands, not mixed into "
+        "selected_cards. Prefer coherent packages over isolated staples, and leave final "
+        "deck-size validation to deterministic backend skills."
     ),
     "validation": (
         "Run deterministic validation and price refresh after card selection. Do not rely "

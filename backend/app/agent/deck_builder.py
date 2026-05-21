@@ -60,11 +60,24 @@ AGENT_SCRYFALL_PLAN_SCHEMA: dict[str, Any] = {
 AGENT_SELECTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["title", "explanation", "selected_cards"],
+    "required": ["title", "explanation", "selected_cards", "selected_lands"],
     "properties": {
         "title": {"type": "string"},
         "explanation": {"type": "string"},
         "selected_cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "count", "role"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 4},
+                    "role": {"type": "string"},
+                },
+            },
+        },
+        "selected_lands": {
             "type": "array",
             "items": {
                 "type": "object",
@@ -103,12 +116,14 @@ class AgentSelectionOutput(BaseModel):
     title: str
     explanation: str
     selected_cards: list[AgentSelectedCardOutput] = Field(default_factory=list)
+    selected_lands: list[AgentSelectedCardOutput] = Field(default_factory=list)
 
 
 class AgenticDeckOutput(BaseModel):
     title: str
     explanation: str
     selected_cards: list[AgentSelectedCardOutput] = Field(default_factory=list)
+    selected_lands: list[AgentSelectedCardOutput] = Field(default_factory=list)
     context_notes: list[str] = Field(default_factory=list)
     validation_notes: list[str] = Field(default_factory=list)
 
@@ -186,12 +201,16 @@ class AbstractDeckAgent(ABC):
         steps.append(
             {
                 "label": "GPT card selection",
-                "detail": f"Selected {len(result.get('selected_cards', []))} card names from corpus-backed card candidates.",
+                "detail": (
+                    f"Selected {len(result.get('selected_cards', []))} nonland card names and "
+                    f"{len(result.get('selected_lands', []))} land names from corpus-backed candidates."
+                ),
             }
         )
         result["agent_steps"] = steps
         result["tool_card_names"] = _tool_card_names(tool_results)
         result["tool_card_payloads"] = _tool_card_payloads(tool_results)
+        result["tool_land_payloads"] = _tool_land_payloads(tool_results)
         result["tool_context_payloads"] = _tool_context_payloads(tool_results)
         return result
 
@@ -344,7 +363,9 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "request": request.model_dump(mode="json"),
                             "request_constraints": request_constraints_payload(request),
                             "deck_workflow": workflow_payload("scryfall_planning"),
-                            "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
+                            "available_tools": self.tools.tool_signatures(
+                                ("search_cards_scryfall", "search_card_corpus")
+                            ),
                             "retrieved_strategy_context": [
                                 document_to_model_context(document)
                                 for document in rag_context["strategy"][:SCRYFALL_PLAN_STRATEGY_CONTEXT_LIMIT]
@@ -442,6 +463,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
             "meta_decks": rag_results["meta_decks"],
             "rules": rag_results["rules"],
             "cards": [],
+            "lands": [],
             "lookups": [],
         }
 
@@ -470,15 +492,20 @@ class OllamaDeckAgent(AbstractDeckAgent):
 
         for query in _land_scryfall_queries(request):
             try:
-                documents = await self.tools.search_cards_scryfall(query=query, limit=16)
-            except httpx.HTTPError as exc:
-                steps.append({"label": "Live Scryfall land search failed", "detail": f"{query} -> {exc}"})
+                documents = self.tools.search_card_corpus(
+                    query=query,
+                    mtg_format=request.format,
+                    request=request,
+                    limit=16,
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                steps.append({"label": "Corpus-backed land search failed", "detail": f"{query} -> {exc}"})
                 continue
-            results["cards"].extend(documents)
+            results["lands"].extend(documents)
             steps.append(
                 {
-                    "label": "Live Scryfall land search",
-                    "detail": f"{query} -> {len(documents)} live lands",
+                    "label": "Corpus-backed land search",
+                    "detail": f"{query} -> {len(documents)} lands",
                 }
             )
 
@@ -494,6 +521,13 @@ class OllamaDeckAgent(AbstractDeckAgent):
         land_guidance: dict[str, int],
     ) -> dict[str, Any]:
         candidates = _candidate_payloads(card_context, tool_results, request=request, limit=45)
+        land_candidates = _candidate_payloads(
+            card_context,
+            tool_results,
+            request=request,
+            limit=24,
+            include_lands=True,
+        )
         payload = {
             "model": self.settings.ollama_model,
             "stream": False,
@@ -505,8 +539,9 @@ class OllamaDeckAgent(AbstractDeckAgent):
                     "content": (
                         workflow_instructions("card_selection")
                         + "\n\nYou are a Magic: The Gathering deck-building agent. Select a focused package "
-                        "of cards from the provided candidates, including an appropriate mana base "
-                        "when land candidates are available. The backend will apply copy counts and "
+                        "of nonland cards and a separate mana base from the provided candidates. "
+                        "Return nonland spells in selected_cards and lands in selected_lands. "
+                        "The backend will apply copy counts, fill missing land slots, and "
                         "validation. Use exact candidate names only. Return JSON. Respect deck size "
                         "and copy constraints: non-Commander constructed decks need at least 60 cards, "
                         "Commander decks need exactly 100 cards, non-basic cards are limited to four "
@@ -530,6 +565,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                             "budget_guidance": _budget_guidance(request),
                             "land_guidance": land_guidance,
                             "candidate_cards": candidates,
+                            "land_candidates": land_candidates,
                             "retrieved_rules_context": [
                                 document_to_model_context(document)
                                 for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
@@ -544,11 +580,13 @@ class OllamaDeckAgent(AbstractDeckAgent):
                                 if isinstance(payload, dict)
                             ],
                             "instructions": (
-                                "Pick 8 to 18 card names that best fit the request. Include useful "
-                                "nonbasic lands when they fit the colors, format, and budget. Use more "
+                                "Pick enough nonland card names to fill the nonland portion of the "
+                                "deck after lands, usually 9 to 16 names with appropriate counts. "
+                                "Include useful nonbasic lands in selected_lands when they fit the "
+                                "colors, format, and budget. Use more "
                                 "of a large budget for stronger staples instead of defaulting to the "
-                                "cheapest legal cards. Return "
-                                "selected_cards with exact name, count, and short role."
+                                "cheapest legal cards. The backend will not choose unselected spells. Return "
+                                "selected_cards and selected_lands with exact name, count, and short role."
                             ),
                         },
                         separators=(",", ":"),
@@ -626,7 +664,7 @@ def _land_scryfall_queries(request: DeckRequest) -> list[str]:
 
 def _tool_card_names(tool_results: dict[str, Any]) -> list[str]:
     names: list[str] = []
-    for bucket in ("cards", "lookups"):
+    for bucket in ("cards", "lands", "lookups"):
         for item in tool_results.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -650,6 +688,21 @@ def _tool_card_payloads(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             seen.add(name)
             payloads.append(item)
+    return payloads
+
+
+def _tool_land_payloads(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in tool_results.get("lands", []):
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata") or {}
+        name = metadata.get("name") or item.get("title")
+        if not isinstance(name, str) or not name or name in seen:
+            continue
+        seen.add(name)
+        payloads.append(item)
     return payloads
 
 
@@ -774,16 +827,26 @@ def _payload_to_retrieved_document(payload: Any) -> RetrievedDocument | None:
     )
 
 
+def _payload_is_land(payload: dict[str, Any]) -> bool:
+    metadata = payload.get("metadata") or {}
+    type_line = str(metadata.get("type_line") or "")
+    return "land" in {part.lower() for part in type_line.split(" ")}
+
+
 def _candidate_payloads(
     card_context: list[RetrievedDocument],
     tool_results: dict[str, Any],
     request: DeckRequest,
     limit: int,
+    *,
+    include_lands: bool = False,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     def add_payload(payload: dict[str, Any]) -> None:
+        if _payload_is_land(payload) != include_lands:
+            return
         metadata = payload.get("metadata") or {}
         name = metadata.get("name") or payload.get("title")
         if not isinstance(name, str) or not name or name in seen:
@@ -807,7 +870,7 @@ def _candidate_payloads(
     for document in card_context:
         add_payload(document_to_model_context(document))
 
-    for bucket in ("lookups", "cards"):
+    for bucket in ("lookups", "cards", "lands"):
         for payload in tool_results.get(bucket, []):
             if isinstance(payload, dict):
                 add_payload(payload)
@@ -857,10 +920,25 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "meta_decks": [],
             "rules": [],
             "cards": [],
+            "lands": [],
             "lookups": [],
             "evaluations": [],
             "validations": [],
         }
+
+        for query in _land_scryfall_queries(request):
+            try:
+                documents = self.tools.search_card_corpus(
+                    query=query,
+                    mtg_format=request.format,
+                    request=request,
+                    limit=24,
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                steps.append({"label": "Dedicated land corpus search failed", "detail": f"{query} -> {exc}"})
+                continue
+            tool_results["lands"].extend(documents)
+            steps.append({"label": "Dedicated land corpus search", "detail": f"{query} -> {len(documents)} lands"})
 
         @function_tool
         def search_strategy(query: str, limit: int = 40) -> list[dict[str, Any]]:
@@ -892,6 +970,20 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             documents = await self.tools.search_cards_scryfall(query=query, limit=limit)
             tool_results["cards"].extend(documents)
             steps.append({"label": "Agent card search", "detail": f"{query} -> {len(documents)} cards"})
+            return documents
+
+        @function_tool
+        def search_card_corpus(query: str, limit: int = 24) -> list[dict[str, Any]]:
+            """Search the indexed card corpus with this deck request's format, color, budget, and land filters."""
+            documents = self.tools.search_card_corpus(
+                query=query,
+                mtg_format=request.format,
+                request=request,
+                limit=limit,
+            )
+            bucket = "lands" if any(_payload_is_land(document) for document in documents) else "cards"
+            tool_results[bucket].extend(documents)
+            steps.append({"label": "Agent corpus search", "detail": f"{query} -> {len(documents)} cards"})
             return documents
 
         @function_tool
@@ -941,9 +1033,13 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "Own the workflow: plan searches, call tools, inspect results, revise queries, curate context, "
             "evaluate candidate cards, and only then return selected_cards. Use exact names from Scryfall "
             "or lookup_card results. Call validate_deck_cards when you have a complete proposed list; if it "
-            "fails, revise before your final answer. The backend will still deterministically finalize land "
-            "counts, deck size, copy limits, budget, and legality after your output. "
-            "Prefer 8 to 22 high-quality nonland and nonbasic-land selections with counts reflecting role. "
+            "fails, revise before your final answer. The backend will deterministically finalize land "
+            "counts, deck size, copy limits, budget, and legality after your output, but it will not "
+            "choose unselected spells. "
+            "Make mana base construction explicit: use land_candidates and search_card_corpus land queries, "
+            "then return nonland cards in selected_cards and lands in selected_lands. "
+            "Selected_cards must cover the deck's nonland slots: prefer 9 to 16 high-quality nonland "
+            "selections with counts reflecting role, plus a separate nonbasic-land package. "
             "Use curate_context after broad retrieval so the final explanation is based on compact notes."
             "\n\n"
             + request_constraints_instructions(request)
@@ -953,6 +1049,13 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "request_constraints": request_constraints_payload(request),
             "budget_guidance": _budget_guidance(request),
             "land_guidance": land_guidance,
+            "land_candidates": _candidate_payloads(
+                card_context,
+                tool_results,
+                request=request,
+                limit=32,
+                include_lands=True,
+            ),
             "initial_strategy_context": [
                 document_to_model_context(document)
                 for document in strategy_context[:INITIAL_STRATEGY_CONTEXT_LIMIT]
@@ -965,6 +1068,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 "search_meta_decks",
                 "search_rules",
                 "search_cards_scryfall",
+                "search_card_corpus",
                 "lookup_card",
                 "curate_context",
                 "evaluate_deck_candidates",
@@ -982,6 +1086,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 search_meta_decks,
                 search_rules,
                 search_cards_scryfall,
+                search_card_corpus,
                 lookup_card,
                 curate_context,
                 evaluate_deck_candidates,
@@ -992,12 +1097,16 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         steps.append(
             {
                 "label": "Agent final selection",
-                "detail": f"Returned {len(result.get('selected_cards', []))} card names after tool-driven planning.",
+                "detail": (
+                    f"Returned {len(result.get('selected_cards', []))} nonland card names and "
+                    f"{len(result.get('selected_lands', []))} land names after tool-driven planning."
+                ),
             }
         )
         result["agent_steps"] = steps
         result["tool_card_names"] = _tool_card_names(tool_results)
         result["tool_card_payloads"] = _tool_card_payloads(tool_results)
+        result["tool_land_payloads"] = _tool_land_payloads(tool_results)
         result["tool_context_payloads"] = _tool_context_payloads(tool_results)
         return result
 
@@ -1067,7 +1176,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "request": request.model_dump(mode="json"),
             "request_constraints": request_constraints_payload(request),
             "deck_workflow": workflow_payload("scryfall_planning"),
-            "available_tools": self.tools.tool_signatures(("search_cards_scryfall",)),
+            "available_tools": self.tools.tool_signatures(("search_cards_scryfall", "search_card_corpus")),
             "retrieved_strategy_context": [
                 document_to_model_context(document)
                 for document in rag_context["strategy"][:SCRYFALL_PLAN_STRATEGY_CONTEXT_LIMIT]
@@ -1144,6 +1253,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "meta_decks": rag_results["meta_decks"],
             "rules": rag_results["rules"],
             "cards": [],
+            "lands": [],
             "lookups": [],
         }
 
@@ -1167,11 +1277,16 @@ class OpenAIDeckAgent(AbstractDeckAgent):
 
         for query in _land_scryfall_queries(request):
             try:
-                documents = await self.tools.search_cards_scryfall(query=query, limit=20)
-            except httpx.HTTPError as exc:
+                documents = self.tools.search_card_corpus(
+                    query=query,
+                    mtg_format=request.format,
+                    request=request,
+                    limit=20,
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
                 steps.append({"label": "Corpus-backed land search failed", "detail": f"{query} -> {exc}"})
                 continue
-            results["cards"].extend(documents)
+            results["lands"].extend(documents)
             steps.append({"label": "Corpus-backed land search", "detail": f"{query} -> {len(documents)} lands"})
 
         return results
@@ -1186,12 +1301,20 @@ class OpenAIDeckAgent(AbstractDeckAgent):
         land_guidance: dict[str, int],
     ) -> dict[str, Any]:
         candidates = _candidate_payloads(card_context, tool_results, request=request, limit=80)
+        land_candidates = _candidate_payloads(
+            card_context,
+            tool_results,
+            request=request,
+            limit=32,
+            include_lands=True,
+        )
         instructions = (
             workflow_instructions("card_selection")
             + "\n\nYou are a Magic: The Gathering deck-building agent. Select a coherent "
-            "package of cards from exact candidate names, including useful nonbasic lands "
-            "when land candidates are available. The backend will apply copy counts, fill "
-            "missing basic lands, and validate the final list. Use retrieved context for "
+            "package of nonland cards from exact candidate names, and select useful "
+            "nonbasic lands separately in selected_lands when land candidates are available. "
+            "The backend will apply copy counts, fill missing land slots, and validate the final list; "
+            "it will not choose unselected spells. Use retrieved context for "
             "strategy and rules. Respect deck size and copy constraints: non-Commander "
             "constructed decks need at least 60 cards, Commander decks need exactly 100 "
             "cards, non-basic cards are limited to four copies in constructed, and Commander "
@@ -1211,6 +1334,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             "budget_guidance": _budget_guidance(request),
             "land_guidance": land_guidance,
             "candidate_cards": candidates,
+            "land_candidates": land_candidates,
             "retrieved_rules_context": [
                 document_to_model_context(document) for document in rules_context[:INITIAL_RULE_CONTEXT_LIMIT]
             ],
@@ -1225,8 +1349,10 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             ],
             "agent_tool_results": tool_results,
             "instructions": (
-                "Pick 8 to 22 cards. Use exact candidate names. Include mana-fixing "
-                "lands that fit the colors and format. If budget_usd is high, use it "
+                "Pick enough nonland cards to fill the nonland portion of the deck after lands, "
+                "usually 9 to 16 names with appropriate counts, and a separate selected_lands package. "
+                "Use exact candidate names. Include mana-fixing lands that fit the "
+                "colors and format. If budget_usd is high, use it "
                 "for stronger staples and a better mana base instead of defaulting to "
                 "the cheapest legal candidates. Explain the deck's plan using retrieved "
                 "strategy/rules and corpus-backed card data."
