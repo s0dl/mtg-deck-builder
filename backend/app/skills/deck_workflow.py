@@ -234,11 +234,11 @@ WORKFLOW_STEPS: tuple[DeckWorkflowStep, ...] = (
     DeckWorkflowStep(
         key="discover_live_cards",
         objective=(
-            "Use retrieved context to build targeted live Scryfall searches for core cards, "
+            "Use retrieved context to build targeted corpus-backed card searches for core cards, "
             "support pieces, interaction, engines, and mana fixing."
         ),
         tools=("search_cards_scryfall",),
-        output="Live Scryfall candidate card documents with current legality, price, and text.",
+        output="Corpus-backed candidate card documents with legality, price, and text.",
     ),
     DeckWorkflowStep(
         key="select_candidates",
@@ -273,7 +273,7 @@ PHASE_OBJECTIVES: dict[WorkflowPhase, str] = {
         "Cover strategy, meta deck examples, and format-specific construction rules."
     ),
     "scryfall_planning": (
-        "Plan only live Scryfall searches from retrieved RAG context. Use format, color "
+        "Plan only corpus-backed card searches from retrieved RAG context. Use format, color "
         "identity, paper availability, and non-land or land filters explicitly."
     ),
     "card_selection": (

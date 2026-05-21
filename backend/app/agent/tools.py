@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.mcp.scryfall_client import ScryfallClient
 from app.mcp.server import DeckBuilderMcpServer
 from app.models.deck import DeckRequest, Format
 from app.rag.retriever import RagRetriever
@@ -16,10 +15,9 @@ class DeckAgentTools:
         self,
         mcp_server: DeckBuilderMcpServer | None = None,
         retriever: RagRetriever | None = None,
-        scryfall: ScryfallClient | None = None,
     ) -> None:
         if mcp_server is None:
-            mcp_server = DeckBuilderMcpServer(retriever=retriever, scryfall=scryfall)
+            mcp_server = DeckBuilderMcpServer(retriever=retriever)
         self.mcp_server = mcp_server
 
     def list_tools(self) -> list[dict[str, Any]]:

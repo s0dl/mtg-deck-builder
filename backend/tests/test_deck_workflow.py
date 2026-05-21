@@ -53,7 +53,7 @@ def test_workflow_instructions_bind_the_model_to_one_phase() -> None:
     instructions = workflow_instructions("scryfall_planning")
 
     assert "Current phase: scryfall_planning." in instructions
-    assert "Plan only live Scryfall searches" in instructions
+    assert "Plan only corpus-backed card searches" in instructions
     assert "Do not ask for tools outside the current workflow phase." in instructions
 
 
@@ -149,5 +149,5 @@ def test_agent_scryfall_phase_looks_up_must_include_cards() -> None:
     assert [payload["title"] for payload in results["lookups"]] == ["Slickshot Show-Off"]
     assert steps[0] == {
         "label": "Requested card lookup",
-        "detail": "Slickshot Show-Off -> live Scryfall candidate",
+        "detail": "Slickshot Show-Off -> corpus-backed card candidate",
     }

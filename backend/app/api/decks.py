@@ -2,7 +2,6 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends
-import httpx
 from sqlalchemy.orm import Session
 
 from app.agent.deck_builder import OllamaDeckAgent, OpenAIDeckAgent
@@ -180,11 +179,13 @@ def _cards_from_retrieved_documents(
         card = {
             "name": name,
             "count": count,
-            "role": document.metadata.get("type_line") or "retrieved from live Scryfall data",
+            "role": document.metadata.get("type_line") or "retrieved from the card corpus",
             "mana_value": document.metadata.get("mana_value"),
         }
-        if document.metadata.get("estimated_price_usd") is not None:
-            card["estimated_price_usd"] = document.metadata.get("estimated_price_usd")
+        price = _document_price_usd(document)
+        if price is not None:
+            card["estimated_price_usd"] = price
+            card["price_usd"] = price
         cards.append(card)
 
         if len(cards) >= max_cards:
@@ -211,8 +212,10 @@ def _enrich_card_from_document(card: dict, document: RetrievedDocument | None) -
         enriched["type_line"] = document.metadata.get("type_line")
     if document.metadata.get("mana_value") is not None:
         enriched["mana_value"] = document.metadata.get("mana_value")
-    if document.metadata.get("estimated_price_usd") is not None:
-        enriched["estimated_price_usd"] = document.metadata.get("estimated_price_usd")
+    price = _document_price_usd(document)
+    if price is not None:
+        enriched["estimated_price_usd"] = price
+        enriched["price_usd"] = price
     return enriched
 
 
@@ -233,6 +236,8 @@ def _merge_duplicate_cards(cards: list[dict], mtg_format: Format) -> list[dict]:
             existing["role"] = card.get("role")
         if existing.get("estimated_price_usd") is None and card.get("estimated_price_usd") is not None:
             existing["estimated_price_usd"] = card.get("estimated_price_usd")
+        if existing.get("price_usd") is None and card.get("price_usd") is not None:
+            existing["price_usd"] = card.get("price_usd")
         if existing.get("mana_value") is None and card.get("mana_value") is not None:
             existing["mana_value"] = card.get("mana_value")
 
@@ -333,7 +338,8 @@ def _build_sideboard_cards(
                 "count": count,
                 "role": _sideboard_role(document),
                 "mana_value": document.metadata.get("mana_value"),
-                "estimated_price_usd": document.metadata.get("estimated_price_usd"),
+                "estimated_price_usd": _document_price_usd(document),
+                "price_usd": _document_price_usd(document),
             }
         )
         total_sideboard_cards += count
@@ -468,7 +474,7 @@ def _add_basic_lands(
 
 
 def _land_price(document: RetrievedDocument) -> float:
-    price = document.metadata.get("estimated_price_usd")
+    price = _document_price_usd(document)
     if isinstance(price, int | float):
         return float(price)
     return 9999.0
@@ -550,13 +556,16 @@ def _add_recommended_nonbasic_lands(
                     "role": document.metadata.get("type_line") or "mana fixing",
                     "type_line": document.metadata.get("type_line"),
                     "mana_value": document.metadata.get("mana_value") or 0,
-                    "estimated_price_usd": document.metadata.get("estimated_price_usd"),
+                    "estimated_price_usd": _document_price_usd(document),
+                    "price_usd": _document_price_usd(document),
                 }
             )
         else:
             existing["count"] += add_count
-            if existing.get("estimated_price_usd") is None and document.metadata.get("estimated_price_usd") is not None:
-                existing["estimated_price_usd"] = document.metadata.get("estimated_price_usd")
+            price = _document_price_usd(document)
+            if existing.get("estimated_price_usd") is None and price is not None:
+                existing["estimated_price_usd"] = price
+                existing["price_usd"] = price
         added += add_count
     return added
 
@@ -708,7 +717,7 @@ def _scryfall_candidate_queries(
     return deduped
 
 
-async def _live_scryfall_card_context(
+async def _rag_card_context(
     request: DeckRequest,
     strategy_context: list[RetrievedDocument],
     max_cards: int,
@@ -731,10 +740,19 @@ async def _live_scryfall_card_context(
 
     for name in request.must_include:
         try:
-            add_document(payload_to_retrieved_document(await mcp_server.call_tool("lookup_card", {"name": name})))
-        except httpx.HTTPError as exc:
+            payloads = mcp_server.call_tool_sync(
+                "search_card_corpus",
+                {
+                    "query": name,
+                    "limit": 3,
+                    "mtg_format": request.format.value,
+                    "request": request.model_dump(mode="json"),
+                },
+            )
+            add_document(payload_to_retrieved_document(payloads[0]) if payloads else None)
+        except (IndexError, TypeError, ValueError, RuntimeError) as exc:
             logger.warning(
-                "Scryfall requested card lookup failed",
+                "RAG requested card lookup failed",
                 extra=log_extra(name=name, error=str(exc)),
             )
 
@@ -742,23 +760,17 @@ async def _live_scryfall_card_context(
         if len(documents) >= max_cards:
             break
         try:
-            payloads = await mcp_server.call_tool(
+            payloads = mcp_server.call_tool_sync(
                 "search_cards_scryfall",
-                {"query": query, "limit": max_cards - len(documents)},
+                {
+                    "query": query,
+                    "limit": max_cards - len(documents),
+                    "request": request.model_dump(mode="json"),
+                    "mtg_format": request.format.value,
+                },
             )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                continue
-            logger.warning(
-                "Scryfall candidate search failed",
-                extra=log_extra(query=query, error=str(exc)),
-            )
-            continue
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "Scryfall candidate search failed",
-                extra=log_extra(query=query, error=str(exc)),
-            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("RAG candidate search failed", extra=log_extra(query=query, error=str(exc)))
             continue
 
         for payload in payloads:
@@ -768,7 +780,7 @@ async def _live_scryfall_card_context(
 
     queries = _scryfall_candidate_queries(request, strategy_context)
     logger.info(
-        "Live Scryfall card context assembled",
+        "RAG card context assembled",
         extra=log_extra(card_context_count=len(documents), query_count=len(queries)),
     )
     return documents
@@ -892,6 +904,7 @@ def _coerce_model_cards(model_cards: list[dict], allowed_names: set[str]) -> lis
                 "role": str(card.get("role", "")).strip(),
                 "mana_value": card.get("mana_value"),
                 "estimated_price_usd": card.get("estimated_price_usd"),
+                "price_usd": card.get("price_usd"),
             }
         )
     return cards
@@ -961,6 +974,7 @@ def _documents_from_agent_card_payloads(agent_result: dict) -> list[RetrievedDoc
 
 async def _hydrate_agent_selected_card_payloads(
     agent_result: dict,
+    request: DeckRequest,
     mcp_server: DeckBuilderMcpServer,
     steps: list[dict[str, str]],
 ) -> None:
@@ -991,17 +1005,31 @@ async def _hydrate_agent_selected_card_payloads(
     failed: list[str] = []
     for name in selected_names:
         try:
-            payload = await mcp_server.call_tool("lookup_card", {"name": name})
-        except httpx.HTTPError:
+            payload = mcp_server.call_tool_sync(
+                "search_card_corpus",
+                {
+                    "query": name,
+                    "limit": 1,
+                    "mtg_format": request.format.value,
+                    "request": request.model_dump(mode="json"),
+                },
+            )
+        except (TypeError, ValueError, RuntimeError):
             failed.append(name)
             continue
         if isinstance(payload, dict):
             payloads.append(payload)
             existing_names.add(name)
             hydrated += 1
+        elif isinstance(payload, list) and payload:
+            first_payload = payload[0]
+            if isinstance(first_payload, dict):
+                payloads.append(first_payload)
+                existing_names.add(name)
+                hydrated += 1
 
     if selected_names:
-        detail = f"Hydrated {hydrated} of {len(selected_names)} selected nonbasic names through live Scryfall lookup."
+        detail = f"Hydrated {hydrated} of {len(selected_names)} selected nonbasic names through RAG lookup."
         if failed:
             detail += f" Failed: {', '.join(failed[:5])}."
         steps.append({"label": "Agent selected-card hydration", "detail": detail})
@@ -1038,6 +1066,16 @@ def _documents_from_mcp_payloads(payloads: Any) -> list[RetrievedDocument]:
     ]
 
 
+def _document_price_usd(document: RetrievedDocument) -> float | None:
+    price = document.metadata.get("price_usd")
+    if isinstance(price, (int, float)):
+        return float(price)
+    price = document.metadata.get("estimated_price_usd")
+    if isinstance(price, (int, float)):
+        return float(price)
+    return None
+
+
 def _validate_deck_with_mcp(
     cards: list[dict],
     mtg_format: Format,
@@ -1051,8 +1089,9 @@ def _validate_deck_with_mcp(
     )
 
 
-async def _enrich_prices_with_scryfall(
+async def _enrich_prices_with_rag(
     cards: list[dict],
+    request: DeckRequest,
     mcp_server: DeckBuilderMcpServer,
     steps: list[dict[str, str]],
 ) -> list[dict]:
@@ -1065,15 +1104,33 @@ async def _enrich_prices_with_scryfall(
             continue
         checked += 1
         try:
-            document = payload_to_retrieved_document(await mcp_server.call_tool("lookup_card", {"name": name}))
-        except httpx.HTTPError as exc:
-            steps.append({"label": "Scryfall price check failed", "detail": f"{name} -> {exc}"})
+            payloads = mcp_server.call_tool_sync(
+                "search_card_corpus",
+                {
+                    "query": name,
+                    "limit": 5,
+                    "mtg_format": request.format.value,
+                    "request": request.model_dump(mode="json"),
+                },
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            steps.append({"label": "RAG price check failed", "detail": f"{name} -> {exc}"})
             continue
-        if document is None:
+        documents = _documents_from_mcp_payloads(payloads)
+        if not documents:
             continue
-        price = document.metadata.get("estimated_price_usd")
+        document = next(
+            (
+                candidate
+                for candidate in documents
+                if str(candidate.metadata.get("name") or candidate.title).strip().lower() == name.lower()
+            ),
+            documents[0],
+        )
+        price = _document_price_usd(document)
         if price is not None:
             card["estimated_price_usd"] = price
+            card["price_usd"] = price
             priced += 1
         if card.get("role") in {None, "", "agent-selected card"}:
             card["role"] = document.metadata.get("type_line") or card.get("role") or "agent-selected card"
@@ -1082,7 +1139,7 @@ async def _enrich_prices_with_scryfall(
 
     steps.append(
         {
-            "label": "Scryfall price check",
+            "label": "RAG price check",
             "detail": f"Checked {checked} nonbasic cards after validation; found prices for {priced}.",
         }
     )
@@ -1197,7 +1254,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
     max_nonland_cards = _max_nonland_cards(request.format)
     card_context = []
     if not settings.openai_agent_enabled:
-        card_context = await _live_scryfall_card_context(
+        card_context = await _rag_card_context(
             request=request,
             strategy_context=strategy_context,
             max_cards=max_nonland_cards * 4,
@@ -1237,7 +1294,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         agent_steps.append(
             {
                 "label": "Fallback candidate context",
-                "detail": f"Fetched {len(card_context)} live Scryfall candidates before fallback drafting.",
+                "detail": f"Fetched {len(card_context)} RAG card candidates before fallback drafting.",
             }
         )
     logger.info(
@@ -1266,7 +1323,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 },
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
-            await _hydrate_agent_selected_card_payloads(agent_result, mcp_server, agent_steps)
+            await _hydrate_agent_selected_card_payloads(agent_result, request, mcp_server, agent_steps)
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
             strategy_context = _dedupe_documents(
                 [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]
@@ -1299,8 +1356,9 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                         ),
                     }
                 )
-                model_cards = await _enrich_prices_with_scryfall(
+                model_cards = await _enrich_prices_with_rag(
                     cards=model_cards,
+                    request=request,
                     mcp_server=mcp_server,
                     steps=agent_steps,
                 )
@@ -1324,7 +1382,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     cards=model_cards,
                     sideboard=sideboard,
                     explanation=agent_result.get("explanation")
-                    or "Selected by the OpenAI agent using RAG strategy, rules, and live Scryfall tools.",
+                    or "Selected by the OpenAI agent using RAG strategy, rules, and corpus-backed card tools.",
                     mana_curve=mana_curve,
                     validation=validation,
                     retrieved_context=[f"{item.title} ({item.source})" for item in response_context],
@@ -1342,7 +1400,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 f"OpenAI agent failed, so fallback generation continued: {exc}",
             )
             if not card_context:
-                card_context = await _live_scryfall_card_context(
+                card_context = await _rag_card_context(
                     request=request,
                     strategy_context=strategy_context,
                     max_cards=max_nonland_cards * 4,
@@ -1374,7 +1432,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                 },
             )
             agent_steps.extend(agent_result.get("agent_steps", []))
-            await _hydrate_agent_selected_card_payloads(agent_result, mcp_server, agent_steps)
+            await _hydrate_agent_selected_card_payloads(agent_result, request, mcp_server, agent_steps)
             card_context.extend(_documents_from_agent_card_payloads(agent_result))
             strategy_context = _dedupe_documents(
                 [*strategy_context, *_documents_from_agent_context_payloads(agent_result)]
@@ -1407,8 +1465,9 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                         ),
                     }
                 )
-                model_cards = await _enrich_prices_with_scryfall(
+                model_cards = await _enrich_prices_with_rag(
                     cards=model_cards,
+                    request=request,
                     mcp_server=mcp_server,
                     steps=agent_steps,
                 )
@@ -1432,7 +1491,7 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
                     cards=model_cards,
                     sideboard=sideboard,
                     explanation=agent_result.get("explanation")
-                    or "Selected by the local Ollama agent using RAG strategy, rules, and live Scryfall tools.",
+                    or "Selected by the local Ollama agent using RAG strategy, rules, and corpus-backed card tools.",
                     mana_curve=mana_curve,
                     validation=validation,
                     retrieved_context=[f"{item.title} ({item.source})" for item in response_context],
@@ -1479,8 +1538,9 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
             ),
         }
     )
-    cards = await _enrich_prices_with_scryfall(
+    cards = await _enrich_prices_with_rag(
         cards=cards,
+        request=request,
         mcp_server=mcp_server,
         steps=agent_steps,
     )
@@ -1505,9 +1565,8 @@ async def generate_deck(request: DeckRequest, session: Session = Depends(get_ses
         cards=cards,
         sideboard=sideboard,
         explanation=(
-            "This draft is assembled from requested cards, live Scryfall search results, and "
-            "local strategy/rules context. The placeholder list is only used when live card "
-            "lookup is unavailable."
+            "This draft is assembled from requested cards, corpus-backed card search results, and "
+            "local strategy/rules context. The placeholder list is only used when card lookup is unavailable."
         ),
         mana_curve=mana_curve,
         validation=validation,

@@ -1,11 +1,11 @@
 # MCP Tool Layer
 
-This directory contains the request-scoped MCP tool server and live Magic data adapters.
+This directory contains the request-scoped MCP tool server and corpus-backed Magic data adapters.
 
 ## Main Files
 
-- `server.py` registers and executes deck-builder MCP tools for RAG, live Scryfall, card corpus search, and validation.
-- `scryfall_client.py` wraps Scryfall API calls for card lookup, search, price fields, and legality fields.
+- `server.py` registers and executes deck-builder MCP tools for RAG, card corpus search, and validation.
+- `scryfall_client.py` contains the Scryfall response-to-document mapper used by ingestion and corpus compatibility code.
 
 ## Tools
 
@@ -24,11 +24,10 @@ This directory contains the request-scoped MCP tool server and live Magic data a
 
 ## Production Responsibilities
 
-- Keep RAG, Scryfall, and validation calls behind one constrained tool registry.
-- Fetch current card data at request time when price or legality matters.
+- Keep RAG, corpus-backed card search, and validation calls behind one constrained tool registry.
 - Refresh changed card metadata on a schedule.
 - Push changed card text or legality documents into the RAG ingestion pipeline when those changes affect retrieval.
 
 ## Boundary
 
-Do not put strategic opinions here. This layer should return live facts. Strategy belongs in RAG and deterministic constraints belong in skills.
+Do not put strategic opinions here. This layer should return indexed facts. Strategy belongs in RAG and deterministic constraints belong in skills.

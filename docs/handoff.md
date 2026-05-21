@@ -17,6 +17,10 @@ The app now has a working agent-oriented deck generation path:
 - RAG, live Scryfall, card corpus, lookup, and validation tools are registered on `DeckBuilderMcpServer`.
 - Initial RAG context, model-planned RAG calls, model-planned Scryfall calls, fallback live card discovery, and price refresh now route through the MCP server boundary.
 
+## Reset Context
+
+The codebase was reset to the commit before the LLM results got worse because those results were much better. The problems now are that live Scryfall lookups should not happen, there are still too many lands being chosen.
+
 ## Current Preferred Setup
 
 ```bash

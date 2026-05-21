@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
 
-from app.mcp.scryfall_client import ScryfallClient, scryfall_card_to_document
 from app.models.deck import DeckRequest, Format
 from app.rag.retriever import RagRetriever, RetrievedDocument
 from app.skills.deck_evaluation import evaluate_candidate_document
@@ -98,7 +97,7 @@ class McpToolDefinition:
 class DeckBuilderMcpServer:
     """Request-scoped MCP tool server for deck-building operations.
 
-    The server owns all tool execution that can touch RAG, live Scryfall, or
+    The server owns all tool execution that can touch RAG, corpus-backed card data, or
     deterministic validation. Agent-facing wrappers should call tools through
     this registry instead of importing those dependencies directly.
     """
@@ -106,10 +105,8 @@ class DeckBuilderMcpServer:
     def __init__(
         self,
         retriever: RagRetriever | None = None,
-        scryfall: ScryfallClient | None = None,
     ) -> None:
         self.retriever = retriever
-        self.scryfall = scryfall or ScryfallClient()
         self._tools = _tool_definitions()
         self._handlers: dict[str, ToolHandler] = {
             "search_rag_text": self._tool_search_rag_text,
@@ -119,8 +116,8 @@ class DeckBuilderMcpServer:
             "search_meta_decks": self._tool_search_meta_decks,
             "search_rules": self._tool_search_rules,
             "search_card_corpus": self._tool_search_card_corpus,
-            "search_cards_scryfall": self._tool_search_cards_scryfall,
-            "lookup_card": self._tool_lookup_card,
+            "search_cards_scryfall": self._tool_search_cards_corpus,
+            "lookup_card": self._tool_lookup_card_corpus,
             "validate_deck_cards": self._tool_validate_deck_cards,
         }
 
@@ -267,16 +264,33 @@ class DeckBuilderMcpServer:
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [document_payload(document) for _, document in ranked[:limit]]
 
-    async def _tool_search_cards_scryfall(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
-        payload = await self.scryfall.search_cards(query=_string_arg(arguments, "query"))
+    def _tool_search_cards_corpus(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+        query = _string_arg(arguments, "query")
         limit = _int_arg(arguments, "limit", 20)
-        documents = [scryfall_card_to_document(card) for card in payload.get("data", [])[:limit]]
-        return [document_payload(document) for document in documents]
-
-    async def _tool_lookup_card(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return document_payload(
-            scryfall_card_to_document(await self.scryfall.get_card_named(_string_arg(arguments, "name")))
+        request = _request_arg(arguments.get("request"))
+        mtg_format = _format_arg(arguments.get("mtg_format") or arguments.get("format"))
+        return self._tool_search_card_corpus(
+            {
+                "query": query,
+                "limit": limit,
+                "request": request.model_dump(mode="json") if request is not None else None,
+                "mtg_format": mtg_format.value if mtg_format is not None else None,
+            }
         )
+
+    def _tool_lookup_card_corpus(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = _string_arg(arguments, "name")
+        results = self._tool_search_card_corpus(
+            {
+                "query": query,
+                "limit": 1,
+                "mtg_format": _optional_string_arg(arguments.get("mtg_format")),
+                "request": arguments.get("request"),
+            }
+        )
+        if results:
+            return results[0]
+        raise ValueError(f"No card corpus entry found for: {query}")
 
     def _tool_validate_deck_cards(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return validate_deck(
@@ -293,6 +307,16 @@ def document_payload(document: RetrievedDocument) -> dict[str, Any]:
         "metadata": document.metadata,
         "score": document.score,
     }
+
+
+def _document_price_usd(document: RetrievedDocument) -> float | None:
+    price = document.metadata.get("price_usd")
+    if isinstance(price, (int, float)):
+        return float(price)
+    price = document.metadata.get("estimated_price_usd")
+    if isinstance(price, (int, float)):
+        return float(price)
+    return None
 
 
 def payload_to_retrieved_document(payload: Any) -> RetrievedDocument | None:
@@ -416,7 +440,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
         ),
         "search_cards_scryfall": McpToolDefinition(
             name="search_cards_scryfall",
-            description="Search live Scryfall for current card facts, prices, and legality.",
+            description="Search the indexed Scryfall card corpus for current card facts, prices, and legality.",
             input_schema={
                 "type": "object",
                 "required": ["query"],
@@ -428,7 +452,7 @@ def _tool_definitions() -> dict[str, McpToolDefinition]:
         ),
         "lookup_card": McpToolDefinition(
             name="lookup_card",
-            description="Look up one exact card name in live Scryfall.",
+            description="Look up one exact card name in the indexed Scryfall card corpus.",
             input_schema={
                 "type": "object",
                 "required": ["name"],
@@ -581,9 +605,9 @@ def _card_relevance_score(document: RetrievedDocument, query: str, request: Deck
             if term in text:
                 score += 2.0
         if request.budget_usd is not None:
-            price = document.metadata.get("estimated_price_usd")
-            if isinstance(price, int | float):
-                score += max(0.0, 3.0 - min(float(price), 30.0) / 10.0)
+            price = _document_price_usd(document)
+            if price is not None:
+                score += max(0.0, 3.0 - min(price, 30.0) / 10.0)
 
     return score
 

@@ -57,6 +57,7 @@ def test_load_scryfall_card_corpus_file_builds_card_text_documents(tmp_path: Pat
     assert documents[0].metadata["kind"] == "card_text"
     assert documents[0].metadata["name"] == "Lightning Bolt"
     assert documents[0].metadata["prices"]["usd"] == "0.99"
+    assert documents[0].metadata["price_usd"] == 0.99
     assert documents[0].metadata["estimated_price_usd"] == 0.99
     assert "Mana value: 1" in documents[0].content
     assert "Color identity: R" in documents[0].content

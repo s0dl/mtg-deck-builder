@@ -88,7 +88,7 @@ def test_search_card_corpus_filters_legality_colors_and_lands() -> None:
             card_document("Steam Vents", type_line="Land - Island Mountain", color_identity=["U", "R"], score=0.9),
         ]
     )
-    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=retriever)
 
     results = tools.search_card_corpus(
         query="modern izzet prowess cheap threat damage",
@@ -120,7 +120,7 @@ def test_search_card_corpus_land_queries_return_budget_lands_first() -> None:
     expensive_land.metadata["estimated_price_usd"] = 20.0
     spell = card_document("Lightning Bolt", colors=["R"], content="damage", score=1.0)
     retriever = FakeRetriever([expensive_land, spell, cheap_land])
-    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=retriever)
 
     results = tools.search_card_corpus(
         query="modern land blue red mana fixing cheap budget",
@@ -146,7 +146,7 @@ def test_search_strategy_includes_meta_deck_documents() -> None:
         metadata={"format": "modern", "archetype": "Izzet Prowess"},
     )
     retriever = FakeRetriever([], text_documents=[article, meta_deck])
-    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=retriever)
 
     results = tools.search_strategy(query="modern izzet prowess", mtg_format=Format.modern, limit=4)
 
@@ -155,7 +155,7 @@ def test_search_strategy_includes_meta_deck_documents() -> None:
 
 def test_search_strategy_requests_larger_article_context_by_default() -> None:
     retriever = FakeRetriever([], text_documents=[])
-    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=retriever)
 
     tools.search_strategy(query="modern izzet prowess", mtg_format=Format.modern)
 
@@ -167,7 +167,7 @@ def test_search_card_corpus_combines_vector_and_text_results() -> None:
     vector_card = card_document("Monastery Swiftspear", colors=["R"], content="prowess haste")
     text_card = card_document("Slickshot Show-Off", colors=["R"], content="flying haste prowess")
     retriever = FakeRetriever([vector_card], text_documents=[text_card])
-    tools = DeckAgentTools(retriever=retriever, scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=retriever)
 
     results = tools.search_card_corpus(
         query="modern red prowess",
@@ -180,7 +180,7 @@ def test_search_card_corpus_combines_vector_and_text_results() -> None:
 
 
 def test_evaluate_deck_candidates_scores_request_fit() -> None:
-    tools = DeckAgentTools(retriever=FakeRetriever([]), scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=FakeRetriever([]))
 
     results = tools.evaluate_deck_candidates(
         [
@@ -211,7 +211,7 @@ def test_evaluate_deck_candidates_scores_request_fit() -> None:
 
 
 def test_curate_context_notes_dedupes_and_limits_documents() -> None:
-    tools = DeckAgentTools(retriever=FakeRetriever([]), scryfall=None)  # type: ignore[arg-type]
+    tools = DeckAgentTools(retriever=FakeRetriever([]))
     documents = [
         {"title": "Guide", "source": "mtgdecks_articles", "content": " play cheap threats and burn "},
         {"title": "Guide", "source": "mtgdecks_articles", "content": "play cheap threats and burn"},

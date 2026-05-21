@@ -132,7 +132,7 @@ class AbstractDeckAgent(ABC):
             {
                 "label": "Workflow skill loaded",
                 "detail": (
-                    "Using deck_builder_workflow: request constraints -> RAG tools -> live Scryfall "
+                    "Using deck_builder_workflow: request constraints -> RAG tools -> corpus-backed card "
                     "tools -> candidate selection -> deterministic validation."
                 ),
             },
@@ -166,7 +166,7 @@ class AbstractDeckAgent(ABC):
             {
                 "label": "GPT Scryfall plan",
                 "detail": (
-                    f"Planned {len(_string_list(scryfall_plan.get('scryfall_queries')))} live Scryfall searches "
+                    f"Planned {len(_string_list(scryfall_plan.get('scryfall_queries')))} corpus-backed card searches "
                     "from retrieved RAG context."
                 ),
             }
@@ -186,7 +186,7 @@ class AbstractDeckAgent(ABC):
         steps.append(
             {
                 "label": "GPT card selection",
-                "detail": f"Selected {len(result.get('selected_cards', []))} card names from live Scryfall candidates.",
+                "detail": f"Selected {len(result.get('selected_cards', []))} card names from corpus-backed card candidates.",
             }
         )
         result["agent_steps"] = steps
@@ -215,7 +215,7 @@ class AbstractDeckAgent(ABC):
         request: DeckRequest,
         rag_context: dict[str, list[RetrievedDocument]],
     ) -> dict[str, Any]:
-        """Return a normalized live Scryfall plan matching AGENT_SCRYFALL_PLAN_SCHEMA."""
+        """Return a normalized corpus-backed card plan matching AGENT_SCRYFALL_PLAN_SCHEMA."""
 
     @abstractmethod
     async def _run_rag_tool_plan(
@@ -235,7 +235,7 @@ class AbstractDeckAgent(ABC):
         steps: list[dict[str, str]],
         rag_results: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute live Scryfall tools requested by the plan and return normalized tool results."""
+        """Execute corpus-backed card tools requested by the plan and return normalized tool results."""
 
     @abstractmethod
     async def _select_cards(
@@ -273,7 +273,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
                         "First, plan only the extra RAG tool calls needed before deck construction. "
                         "Use strategy, meta-deck, and rules searches to gather context for the deck. "
-                        "Do not plan any live Scryfall card searches yet."
+                        "Do not plan any card corpus searches yet."
                         "\n\n"
                         + request_constraints_instructions(request)
                     ),
@@ -330,7 +330,7 @@ class OllamaDeckAgent(AbstractDeckAgent):
                         workflow_instructions("scryfall_planning")
                         + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
                         "You already have retrieved strategy, meta-deck, and rules context. "
-                        "Now plan only live Scryfall searches to find cards that match the retrieved "
+                        "Now plan only card corpus searches to find cards that match the retrieved "
                         "documents. Use the documents at hand to name relevant archetype pieces, "
                         "staples, mana bases, and support cards."
                         "\n\n"
@@ -363,11 +363,11 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 },
             ],
         }
-        logger.info("Ollama live Scryfall planning started", extra=log_extra(model=self.settings.ollama_model))
+        logger.info("Ollama corpus-backed card planning started", extra=log_extra(model=self.settings.ollama_model))
         response = await self._post_chat(payload)
         plan = _loads_json_content(response)
         logger.info(
-            "Ollama live Scryfall planning completed",
+            "Ollama corpus-backed card planning completed",
             extra=log_extra(
                 model=self.settings.ollama_model,
                 scryfall_query_count=len(plan.get("scryfall_queries", [])),
@@ -452,13 +452,13 @@ class OllamaDeckAgent(AbstractDeckAgent):
                 steps.append({"label": "Requested card lookup failed", "detail": f"{name} -> {exc}"})
                 continue
             results["lookups"].append(document)
-            steps.append({"label": "Requested card lookup", "detail": f"{name} -> live Scryfall candidate"})
+            steps.append({"label": "Requested card lookup", "detail": f"{name} -> corpus-backed card candidate"})
 
         for query in _string_list(plan.get("scryfall_queries"))[:6]:
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=20)
             except httpx.HTTPError as exc:
-                steps.append({"label": "Live Scryfall search failed", "detail": f"{query} -> {exc}"})
+                steps.append({"label": "Corpus-backed card search failed", "detail": f"{query} -> {exc}"})
                 continue
             results["cards"].extend(documents)
             steps.append(
@@ -888,18 +888,18 @@ class OpenAIDeckAgent(AbstractDeckAgent):
 
         @function_tool
         async def search_cards_scryfall(query: str, limit: int = 24) -> list[dict[str, Any]]:
-            """Search live Scryfall for exact paper card candidates."""
+            """Search the indexed card corpus for exact paper card candidates."""
             documents = await self.tools.search_cards_scryfall(query=query, limit=limit)
             tool_results["cards"].extend(documents)
-            steps.append({"label": "Agent Scryfall search", "detail": f"{query} -> {len(documents)} live cards"})
+            steps.append({"label": "Agent card search", "detail": f"{query} -> {len(documents)} cards"})
             return documents
 
         @function_tool
         async def lookup_card(name: str) -> dict[str, Any]:
-            """Look up a requested or exact card name from live Scryfall."""
+            """Look up a requested or exact card name in the indexed card corpus."""
             document = await self.tools.lookup_card(name=name)
             tool_results["lookups"].append(document)
-            steps.append({"label": "Agent card lookup", "detail": f"{name} -> live Scryfall card"})
+            steps.append({"label": "Agent card lookup", "detail": f"{name} -> corpus-backed card"})
             return document
 
         @function_tool
@@ -1012,7 +1012,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
             "First, plan only the extra RAG tool calls needed before deck construction. "
             "Use strategy, meta-deck, and rules searches to gather context for the deck. "
-            "Do not plan any live Scryfall card searches yet."
+            "Do not plan any card corpus searches yet."
             "\n\n"
             + request_constraints_instructions(request)
         )
@@ -1057,7 +1057,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             workflow_instructions("scryfall_planning")
             + "\n\nYou are a constrained Magic: The Gathering deck-building agent. "
             "You already have retrieved strategy, meta-deck, and rules context. "
-            "Now plan only live Scryfall searches to find cards that match the retrieved "
+            "Now plan only card corpus searches to find cards that match the retrieved "
             "documents. Use the documents at hand to name relevant archetype pieces, "
             "staples, mana bases, and support cards."
             "\n\n"
@@ -1081,7 +1081,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 for document in rag_context["rules"][:INITIAL_RULE_CONTEXT_LIMIT]
             ],
         }
-        logger.info("OpenAI live Scryfall planning started", extra=log_extra(model=self.settings.openai_model))
+        logger.info("OpenAI corpus-backed card planning started", extra=log_extra(model=self.settings.openai_model))
         plan = await run_structured_openai_agent(
             settings=self.settings,
             name="MTG Scryfall planner",
@@ -1090,7 +1090,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
             output_type=AgentScryfallPlanOutput,
         )
         logger.info(
-            "OpenAI live Scryfall planning completed",
+            "OpenAI corpus-backed card planning completed",
             extra=log_extra(
                 model=self.settings.openai_model,
                 scryfall_query_count=len(plan.get("scryfall_queries", [])),
@@ -1154,7 +1154,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 steps.append({"label": "Requested card lookup failed", "detail": f"{name} -> {exc}"})
                 continue
             results["lookups"].append(document)
-            steps.append({"label": "Requested card lookup", "detail": f"{name} -> live Scryfall candidate"})
+            steps.append({"label": "Requested card lookup", "detail": f"{name} -> corpus-backed card candidate"})
 
         for query in _string_list(plan.get("scryfall_queries"))[:8]:
             try:
@@ -1163,16 +1163,16 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 steps.append({"label": "Live Scryfall search failed", "detail": f"{query} -> {exc}"})
                 continue
             results["cards"].extend(documents)
-            steps.append({"label": "Live Scryfall search", "detail": f"{query} -> {len(documents)} live cards"})
+            steps.append({"label": "Corpus-backed card search", "detail": f"{query} -> {len(documents)} cards"})
 
         for query in _land_scryfall_queries(request):
             try:
                 documents = await self.tools.search_cards_scryfall(query=query, limit=20)
             except httpx.HTTPError as exc:
-                steps.append({"label": "Live Scryfall land search failed", "detail": f"{query} -> {exc}"})
+                steps.append({"label": "Corpus-backed land search failed", "detail": f"{query} -> {exc}"})
                 continue
             results["cards"].extend(documents)
-            steps.append({"label": "Live Scryfall land search", "detail": f"{query} -> {len(documents)} live lands"})
+            steps.append({"label": "Corpus-backed land search", "detail": f"{query} -> {len(documents)} lands"})
 
         return results
 
@@ -1229,7 +1229,7 @@ class OpenAIDeckAgent(AbstractDeckAgent):
                 "lands that fit the colors and format. If budget_usd is high, use it "
                 "for stronger staples and a better mana base instead of defaulting to "
                 "the cheapest legal candidates. Explain the deck's plan using retrieved "
-                "strategy/rules and live Scryfall data."
+                "strategy/rules and corpus-backed card data."
             ),
         }
         logger.info(

@@ -39,6 +39,7 @@ def build_card_documents(card: dict[str, Any]) -> list[RagDocumentInput]:
                     "keywords": card.get("keywords", []),
                     "legalities": card.get("legalities", {}),
                     "prices": card.get("prices", {}),
+                    "price_usd": _price_usd(card),
                     "estimated_price_usd": _price_usd(card),
                     "layout": card.get("layout"),
                     "games": card.get("games", []),

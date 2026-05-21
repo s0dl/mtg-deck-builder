@@ -10,6 +10,7 @@ from app.api.decks import (
     _finalize_deck_cards,
     _general_strategy_query,
     _hydrate_agent_selected_card_payloads,
+    _enrich_prices_with_rag,
     _response_context_documents,
     _selected_cards_from_agent_result,
     _shape_deck_size,
@@ -328,21 +329,25 @@ def test_selected_cards_from_agent_result_forces_commander_singletons() -> None:
 
 def test_hydrate_agent_selected_card_payloads_looks_up_missing_selected_names() -> None:
     class FakeMcpServer:
-        async def call_tool(self, name: str, arguments: dict) -> dict:
-            assert name == "lookup_card"
-            card_name = arguments["name"]
-            return {
-                "title": card_name,
-                "content": f"{card_name} card text",
-                "source": "scryfall_live",
-                "metadata": {
-                    "name": card_name,
-                    "type_line": "Instant",
-                    "colors": ["R"],
-                    "color_identity": ["R"],
-                    "legalities": {"modern": "legal"},
-                },
-            }
+        def call_tool_sync(self, name: str, arguments: dict) -> list[dict]:
+            assert name == "search_card_corpus"
+            card_name = arguments["query"]
+            return [
+                {
+                    "title": card_name,
+                    "content": f"{card_name} card text",
+                    "source": "scryfall_bulk",
+                    "metadata": {
+                        "name": card_name,
+                        "type_line": "Instant",
+                        "colors": ["R"],
+                        "color_identity": ["R"],
+                        "legalities": {"modern": "legal"},
+                        "price_usd": 0.99,
+                        "estimated_price_usd": 0.99,
+                    },
+                }
+            ]
 
     agent_result = {
         "selected_cards": [
@@ -363,6 +368,7 @@ def test_hydrate_agent_selected_card_payloads_looks_up_missing_selected_names() 
     asyncio.run(
         _hydrate_agent_selected_card_payloads(
             agent_result,
+            DeckRequest(format=Format.modern, colors=["R"]),
             FakeMcpServer(),  # type: ignore[arg-type]
             steps,
         )
@@ -383,7 +389,46 @@ def test_hydrate_agent_selected_card_payloads_looks_up_missing_selected_names() 
     assert steps == [
         {
             "label": "Agent selected-card hydration",
-            "detail": "Hydrated 1 of 1 selected nonbasic names through live Scryfall lookup.",
+            "detail": "Hydrated 1 of 1 selected nonbasic names through RAG lookup.",
+        }
+    ]
+
+
+def test_enrich_prices_with_rag_uses_card_corpus_metadata() -> None:
+    class FakeMcpServer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def call_tool_sync(self, name: str, arguments: dict) -> list[dict]:
+            self.calls.append((name, arguments))
+            assert name == "search_card_corpus"
+            assert arguments["query"] == "Lightning Bolt"
+            return [
+                {
+                    "title": "Lightning Bolt",
+                    "content": "Lightning Bolt deals 3 damage to any target.",
+                    "source": "scryfall_bulk",
+                    "metadata": {
+                        "name": "Lightning Bolt",
+                        "type_line": "Instant",
+                        "mana_value": 1,
+                        "estimated_price_usd": 0.99,
+                    },
+                }
+            ]
+
+    cards = [{"name": "Lightning Bolt", "count": 4, "role": "interaction"}]
+    request = DeckRequest(format=Format.modern, colors=["R"], strategy="burn")
+    steps: list[dict[str, str]] = []
+
+    enriched = asyncio.run(_enrich_prices_with_rag(cards, request, FakeMcpServer(), steps))
+
+    assert enriched[0]["price_usd"] == 0.99
+    assert enriched[0]["estimated_price_usd"] == 0.99
+    assert steps == [
+        {
+            "label": "RAG price check",
+            "detail": "Checked 1 nonbasic cards after validation; found prices for 1.",
         }
     ]
 

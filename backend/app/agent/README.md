@@ -4,15 +4,15 @@ This directory contains model-backed deck-building agents and the constrained to
 
 ## Current State
 
-- `OpenAIDeckAgent` uses the OpenAI Agents SDK to plan RAG calls for strategy/meta/rules context, then live Scryfall searches from that retrieved context, then card selection from those live results.
+- `OpenAIDeckAgent` uses the OpenAI Agents SDK to plan RAG calls for strategy/meta/rules context, then corpus-backed card searches from that retrieved context, then card selection from those results.
 - `OllamaDeckAgent` remains available for local experimentation.
 - `DeckAgentTools` is a client facade over `DeckBuilderMcpServer`.
-- Strategy, meta-deck, rules, card corpus, live Scryfall, lookup, and validation tools are registered in `app/mcp/server.py`.
+- Strategy, meta-deck, rules, card corpus, card lookup, and validation tools are registered in `app/mcp/server.py`.
 - Agent prompts receive tool signatures from the MCP server registry.
 - Agent prompts and payloads receive the `deck_builder_workflow` skill from `app/skills/deck_workflow.py`.
 
 The backend executes tools and final validation. The model chooses what to ask for, but it does not get arbitrary code execution.
-Live Scryfall is used for agent card discovery and after validation to refresh prices and card facts.
+The indexed card corpus is used for agent card discovery and after validation to refresh prices and card facts.
 
 ## OpenAI Setup
 
