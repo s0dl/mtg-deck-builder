@@ -80,9 +80,10 @@ def load_scryfall_bulk_file(path: Path) -> list[RagDocumentInput]:
         cards = json.load(handle)
 
     logger.info("Parsed Scryfall bulk JSON", extra=log_extra(card_count=len(cards), path=str(path)))
+    selected_cards = _select_lowest_price_cards(cards)
     documents: list[RagDocumentInput] = []
     skipped = 0
-    for card in cards:
+    for card in selected_cards:
         if card.get("layout") in {"art_series", "emblem", "token", "double_faced_token"}:
             skipped += 1
             continue
@@ -96,6 +97,30 @@ def load_scryfall_bulk_file(path: Path) -> list[RagDocumentInput]:
         extra=log_extra(document_count=len(documents), skipped_card_count=skipped),
     )
     return documents
+
+
+def _select_lowest_price_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        key = str(card.get("oracle_id") or card.get("id") or card.get("name") or "").strip()
+        if not key:
+            continue
+        current = selected.get(key)
+        if current is None:
+            selected[key] = card
+            order.append(key)
+            continue
+        if _price_sort_value(card) < _price_sort_value(current):
+            selected[key] = card
+    return [selected[key] for key in order]
+
+
+def _price_sort_value(card: dict[str, Any]) -> float:
+    price = _price_usd(card)
+    return price if price is not None else float("inf")
 
 
 RULE_HEADING_PATTERN = re.compile(r"(?m)^(?P<number>\d{3}(?:\.\d+[a-z]?)?)\. (?P<title>.+)$")
